@@ -1,0 +1,22 @@
+# python / uv
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# machine-specific config (commit sumgrep.toml.example instead)
+sumgrep.toml
+
+# local artifacts
+summarize.log
+*.snapshot
+.DS_Store
+
+# shared index files (sumgrep export)
+*.sumgrep
+
+# personal Claude Code files
+CLAUDE.local.md
+.claude/settings.local.json

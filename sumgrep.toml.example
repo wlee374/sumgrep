@@ -1,0 +1,45 @@
+[qdrant]
+url = "http://localhost:6333"
+collection = "sumgrep"
+
+[embed]
+provider = "ollama"          # http://localhost:11434
+model = "bge-m3"
+dims = 1024                  # married to the collection; assert on startup
+
+[search]
+mode = "summary"      # summary | code | hybrid — what the question is compared against
+                      # 2026-09-07 mini-eval (15 conceptual q): summary hit@5 0.93,
+                      # hybrid 0.67, code 0.53. Override per call with --mode.
+k = 10                # pointers returned (5 -> 10 on 2026-10-12: 4 of 5 reused helpers ranked 6-15)
+floor = 0.35          # drop hits whose best cosine is below this
+code_weight = 1.0     # hybrid only: scale of the code arm (summary arm = 1.0)
+
+[summarize]
+provider = "ollama"       # Option A: anthropic — key from env ANTHROPIC_API_KEY
+model = "qwen3.8:27b-mlx"   # Option B: provider = "ollama", model = "qwen3.5:9b"
+max_words = 300
+num_ctx = 12000       # room for instructions + an 8k-char chunk + output
+think = false
+temperature = 0.7
+top_p = 0.8
+keep_alive = "10m"
+max_tokens = 1500
+presence_penalty = 1.5   # Qwen's own setting against repetition loops
+
+#provider = "anthropic"
+#model = "claude-haiku-4-5"
+#max_words = 120
+#
+#provider = "bedrock"
+#model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+#aws_region = "us-west-2"
+#max_words = 120
+
+
+# One block per repo you index, matched to --repo by `path`; `name` is a label.
+[[repos]]
+name = "myrepo"
+path = "/path/to/myrepo"
+exclude = ["third_party/*"]   # glob patterns skipped when chunking (vendored code etc.)
+

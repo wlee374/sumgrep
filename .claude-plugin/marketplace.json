@@ -1,0 +1,15 @@
+{
+  "name": "sumgrep",
+  "description": "sumgrep: semantic code search by meaning for Claude Code.",
+  "owner": {
+    "name": "Wonjun Lee",
+    "url": "https://github.com/wlee374"
+  },
+  "plugins": [
+    {
+      "name": "sumgrep",
+      "source": "./",
+      "description": "Semantic code search by meaning for Claude Code (local Qdrant + Ollama)."
+    }
+  ]
+}

@@ -1,0 +1,577 @@
+# sumgrep
+
+Semantic code search for Claude Code. Every function in a repo gets a
+one-paragraph English summary written by an LLM. You search those
+summaries by meaning ("where do we merge the results of two searches")
+and get back **pointers**: function name, file, line range. The tool never
+returns source code; you (or Claude) read the real file.
+
+```
+> where do we merge the ranked lists from the two searches?
+
+search_code  →  rrf  src/sumgrep/search.py:L83-114  [function]
+                   The function `rrf` implements Reciprocal Rank Fusion to merge ...
+Read         →  src/sumgrep/search.py, lines 83-114
+```
+
+Grep finds the names you already know. sumgrep finds the code when you
+only know what it does.
+
+## What you need
+
+- **Docker**, running Qdrant (the vector database) on port 6333.
+- **Ollama** with `bge-m3` (embeddings, ~1.2 GB) on port 11434.
+- **uv**, the Python project runner (it fetches Python 3.12 itself).
+- **A summarizer**, only for building the index: a local Ollama model
+  (free; ~40 s per function for a 27B model on an Apple Silicon Mac), or an
+  Anthropic API key (Haiku: ~20 min and a few dollars for 4,000
+  functions). Never Claude Code's login token.
+
+Languages: Python, Go, TypeScript/TSX, JavaScript, C++. With a local
+summarizer nothing leaves your machine. Tested on macOS (Apple Silicon);
+Linux notes are in `SETUP.md`; Windows is untested.
+
+## Get started
+
+1. Install the pieces above and build an index: **`SETUP.md`** takes a
+   bare machine to working search, with a check at every stage.
+2. Connect Claude Code, **one** of:
+   - the plugin (this repo is its own plugin marketplace):
+     ```bash
+     claude plugin marketplace add wlee374/sumgrep
+     claude plugin install sumgrep@sumgrep
+     ```
+   - or register the server from your clone (§5b).
+
+   Not both, or Claude sees every tool twice.
+3. Got a `.sumgrep` file from a teammate? **`QUICKSTART.md`**: three
+   installs and one command, macOS or Windows.
+
+This file is the command reference. Design and phase plan:
+`docs/sumgrep-build-guide.md`.
+
+## How well it works
+
+Measured on one Go codebase of ~4,600 functions with 55 labeled
+questions, comparing each question with the summaries (the default):
+
+| Questions | found 1st | in top 5 | MRR@10 |
+|---|---|---|---|
+| 25 hand-written | 0.76 | 0.92 | 0.81 |
+| 30 real questions agents typed during work | 0.33 | 0.63 | 0.47 |
+
+Real questions are much harder than invented ones. Comparing questions
+with the raw code instead of the summaries did worse on every run (top 5:
+0.64 vs 0.96 on the first 25-question eval). Similarity scores are not
+confidence; see §5.
+
+---
+
+## 1. Before anything: is the machine ready?
+
+Three services must be up. Check all three when something suddenly fails.
+
+```bash
+curl -s localhost:6333/readyz          # Qdrant (vector DB, Docker)  -> "all shards are ready"
+curl -s localhost:11434                # Ollama (models)              -> "Ollama is running"
+ollama list                            # must show bge-m3 and your summarizer model
+```
+
+If Qdrant is down: start Docker Desktop, then `docker start qdrant`.
+If Ollama is down: open the Ollama app, or `brew services start ollama`.
+
+Dashboard for eyeballing the stored data: http://localhost:6333/dashboard
+
+Every command below is run from your sumgrep clone (`~/sumgrep`) as
+`uv run sumgrep <command> --repo PATH`. Below, `$REPO` stands for the
+repo you index:
+
+```bash
+export REPO=/path/to/your/repo
+```
+
+The examples use names from sumgrep's own code; put in your own.
+
+---
+
+## 2. Everyday commands
+
+### Search
+
+```bash
+uv run sumgrep search --repo $REPO "where do we retry with backoff"
+```
+
+Options:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--mode summary\|code\|hybrid` | what the question is compared against (see §5) | `[search].mode` in sumgrep.toml |
+| `--k N` | how many pointers to return | `[search].k` (10) |
+| `--full` | print the whole summary, not just the first sentence | off |
+| `--floor 0.4` | drop hits whose best score is below this | `[search].floor` (0.35) |
+| `--code-weight 0.2` | hybrid only: scale the code arm's vote | `[search].code_weight` (1.0) |
+| `--hyde` | rewrite the question with the summarizer LLM first (slow, ~35 s) | off |
+
+Examples:
+
+```bash
+uv run sumgrep search --repo $REPO "in-memory store with expiring entries" --k 10
+uv run sumgrep search --repo $REPO "merge two ranked lists into one" --mode hybrid
+uv run sumgrep search --repo $REPO "trim_repetition" --full --k 1     # look one function up by name
+```
+
+### Re-index after the repo changed
+
+```bash
+uv run sumgrep index --repo $REPO
+```
+
+Incremental. Only functions whose body changed are re-summarized
+(about 40 s each on a local 27B model). Unchanged functions, comment
+edits, and moved code cost nothing. A no-op run takes ~3 s.
+
+The last line tells you what happened:
+
+```
+done in 41s · chunks 4215 · unchanged 4214 · lines refreshed 0 · embedded 1 · deleted 0 · LLM calls 1 · failed 0
+```
+
+| Field | Meaning |
+|---|---|
+| `unchanged` | fingerprint identical, skipped |
+| `lines refreshed` | same code, moved to different lines; line numbers updated |
+| `embedded` | new or changed functions written to the DB |
+| `deleted` | functions that no longer exist (renames count as delete + new) |
+| `LLM calls` | summaries actually generated (cache misses) |
+
+Re-indexing is manual by design. There is no git hook; a local
+summarizer is too heavy to run on every commit.
+
+### Is the index stale?
+
+```bash
+uv run sumgrep meta --repo $REPO
+```
+
+Shows the indexed commit vs. your current HEAD and how many files are
+dirty. A stale index is safe: pointers may name wrong lines, but the
+reader always opens the real file.
+
+### Read the summaries
+
+```bash
+uv run sumgrep summaries --repo $REPO --symbol trim_repetition   # one function
+uv run sumgrep summaries --repo $REPO --symbol SummaryCache.     # all methods of a class
+uv run sumgrep summaries --repo $REPO --symbol search.py         # everything in a file
+uv run sumgrep summaries --repo $REPO --limit 20                 # first 20, unfiltered
+```
+
+Reads the function as it is on disk now. If you edited it since the last
+index there is no summary yet ("0 of 1 chunks have a cached summary");
+run `index` first.
+
+---
+
+## 3. Evaluating search quality
+
+Write labeled questions in a YAML file. Each has a question, a `kind`,
+and the function(s) that count as a correct answer:
+
+```yaml
+repo: sumgrep                      # folder name of the repo (a mismatch only warns)
+queries:
+  - q: merge the ranked results of several searches into one list
+    kind: conceptual               # says what the code does, never its name
+    answers:
+      - src/sumgrep/search.py:rrf  # "path:symbol", or just "symbol" for any file
+  - q: trim_repetition
+    kind: literal                  # the identifier itself: grep's lane, a control group
+    answers:
+      - trim_repetition
+```
+
+A question is a hit if any of its answers is in the top k. Label the
+answers from the code, not from search results, or the eval only
+measures itself. Questions your agents really typed are worth more than
+invented ones (see "How well it works").
+
+```bash
+uv run sumgrep eval --repo $REPO --queries my-queries.yaml                    # all arms, no LLM calls, ~10 s
+uv run sumgrep eval --repo $REPO --queries my-queries.yaml --kind conceptual  # subset
+uv run sumgrep eval --repo $REPO --queries my-queries.yaml --hyde             # adds the HyDE arms, ~35 s per query
+uv run sumgrep eval --repo $REPO --queries my-queries.yaml --code-weight 0.2  # try a different hybrid weight
+```
+
+Without `--queries` it reads `eval/queries.yaml`. It prints, per
+question, the rank at which the right answer appeared in each arm
+(`-` = not in the top 10), then a table:
+
+| Metric | Meaning |
+|---|---|
+| hit@1 | fraction of questions where the right answer was first |
+| hit@5 | ...in the top 5 |
+| MRR | mean of 1/rank; 1.0 is perfect |
+
+---
+
+## 4. Build-time commands (rarely needed)
+
+```bash
+uv run sumgrep chunk --repo $REPO --stats               # how the repo splits into functions
+uv run sumgrep chunk --repo $REPO --sample 5            # print 5 random function chunks
+uv run sumgrep summarize --repo $REPO --dry-run         # how many summaries are missing
+uv run sumgrep summarize --repo $REPO --sample 10       # summarize 10 random functions, print them, mush gate
+uv run sumgrep summarize --repo $REPO --symbol NAME --force   # regenerate one summary
+uv run sumgrep summarize --repo $REPO                   # summarize everything missing (no DB write)
+uv run sumgrep index --repo $REPO --recreate            # drop the DB collection and rebuild (after changing the embedding model)
+uv run sumgrep --help                                   # all commands
+uv run sumgrep search --help                            # flags for one command
+uv run sumgrep export [FILE]                            # index + summary cache -> one .sumgrep file (default: Desktop)
+uv run sumgrep import FILE.sumgrep                      # set up another machine from it (see §5c, QUICKSTART.md)
+```
+
+`summarize` only fills the summary cache; `index` does summarize + embed
++ write to the DB. You normally just run `index`.
+
+---
+
+## 5. Reading search output
+
+```
+rrf  src/sumgrep/search.py:L83-114  [function]
+   The function `rrf` implements Reciprocal Rank Fusion to merge multiple ranked lists ...
+   rrf 0.0164 · summary#1 0.52
+```
+
+Line 1: the pointer. Function, file, lines, kind.
+Line 2: first sentence of its summary (`--full` for all of it).
+Line 3: how it was found.
+
+- `summary#1 0.52`: in the summary search it ranked 1st with similarity 0.52.
+- `code#2 0.49`: in the raw-code search it ranked 2nd with similarity 0.49.
+- `rrf`: the merged score that sets the final order in hybrid mode
+  (each arm adds 1/(60+rank)). In summary or code mode it's just the rank.
+
+**Modes.** Every function is stored as two vectors: its source and its
+English summary. `summary` compares your question to the paragraphs only.
+`code` compares it to the source only. `hybrid` does both and merges.
+On the first 15-question eval, summary found the answer in the top 5 93%
+of the time, hybrid 67%, code 53%, so the default is `summary`.
+
+**Similarity scores are not confidence.** With bge-m3 everything lands
+between 0.45 and 0.60. A question about something that does not exist
+still gets a top hit around 0.50; a real answer can be 0.52. You cannot
+tell "not found" from the number. Signs it's a miss: the top results
+have nothing in common, and the scores are flat. The real check is
+reading the file.
+
+---
+
+## 5b. Using it from Claude Code (MCP server)
+
+The same search, exposed as two tools Claude Code can call:
+`search_code(query, k?, mode?, repo?)` and `index_status(repo?)`. There is
+no re-index tool on purpose.
+
+Connect it **one** way, not both (two registrations give every tool twice).
+
+**As a plugin** (updates with `claude plugin update sumgrep@sumgrep`):
+
+```bash
+claude plugin marketplace add wlee374/sumgrep
+claude plugin install sumgrep@sumgrep
+```
+
+Or inside a session: `/plugin marketplace add wlee374/sumgrep`, then
+`/plugin install sumgrep@sumgrep`. Notes:
+
+- The first start installs the Python dependencies (~120 MB, a few
+  seconds on a fast connection) into Claude Code's plugin data folder.
+  If `/mcp` shows it failed in that very first session, reconnect it there.
+- `uv` must be on the PATH Claude Code starts with.
+- The plugin runs from Claude Code's plugin cache, so it reads its
+  settings from `~/.sumgrep/sumgrep.toml` (or `$SUMGREP_CONFIG`), never
+  from your clone. `import` and `SETUP.md` put the file there.
+- Its tools are named `mcp__plugin_sumgrep_sumgrep__search_code` and
+  `mcp__plugin_sumgrep_sumgrep__index_status`.
+
+**Or register it from your clone** (user scope, so it's available in every
+project). Run in a terminal where the `claude` command works:
+
+```bash
+claude mcp add --scope user sumgrep -- \
+  uv run --project ~/sumgrep python -m sumgrep.mcp_server
+```
+
+If `claude` is not on your PATH, add this to `~/.claude.json` by hand while
+Claude Code is **not** running (it rewrites that file on exit):
+
+```json
+"mcpServers": {
+  "sumgrep": {
+    "type": "stdio",
+    "command": "uv",
+    "args": ["run", "--project", "/path/to/sumgrep", "python", "-m", "sumgrep.mcp_server"]
+  }
+}
+```
+
+Its tools are named `mcp__sumgrep__search_code` and
+`mcp__sumgrep__index_status`. Check it's registered: `claude mcp list`,
+or `/mcp` inside a session.
+
+**What it returns.** Pointers, exactly as stored in the index: function
+name, file path relative to the repo root, line range, kind, e.g.
+`rrf  src/sumgrep/search.py:L83-114  [function]`. The server never
+touches the filesystem and never prints absolute paths, so the same
+index works on any machine, from any checkout, wherever it lives. The
+agent opens the file in its own checkout, or greps the function name.
+
+**Which repos.** Every indexed repo; `repo="name"` narrows to one. With
+more than one repo indexed, each result starts with its repo name.
+`index_status` lists the repos and the commit each was indexed at; code
+added after that commit is not in the index.
+
+**Which settings.** `$SUMGREP_CONFIG` if set, else `sumgrep.toml` in the
+sumgrep folder, else `~/.sumgrep/sumgrep.toml`. `[search]` sets the
+defaults (mode, k, floor).
+
+**Steering.** The server's `instructions` (in `mcp_server.py`, sent to
+Claude Code every session, updated with the code) say how to use the
+results. A four-line generic paragraph in `~/.claude/CLAUDE.md` (SETUP
+§4.2) says when to reach for it; it never needs updating. Behavior details
+go in the server, never in that paragraph.
+
+**Checkpoint.** Open a fresh Claude Code session in your indexed repo
+and ask, in your own words, "where do we handle <something>". In the
+transcript you should see `search_code` called, then a Read or Grep on
+the returned file. That two-step is the design working.
+
+**Testing the server without Claude Code:**
+
+```bash
+uv run --project ~/sumgrep python -m sumgrep.mcp_server
+# waits on stdin (that's the MCP transport); Ctrl-C to quit. Startup errors print here.
+```
+
+Logs from a running server: `~/.claude/` debug logs, or start the server
+from a terminal (above) to see its stderr.
+
+---
+
+## 5c. Using it for real: more repos, other machines, agents
+
+### Add another repo
+
+1. Add a `[[repos]]` entry to your `sumgrep.toml` (name, path, excludes).
+2. Sample first, then index:
+   ```bash
+   uv run sumgrep chunk --repo /path/to/repo --stats          # sane function count?
+   uv run sumgrep summarize --repo /path/to/repo --sample 10  # summaries look right?
+   uv run sumgrep index --repo /path/to/repo                  # full run: ~40 s per function on a local 27B
+   ```
+3. Nothing else to configure: the MCP server searches every indexed repo.
+
+All repos share one Qdrant collection, filtered by repo name. Two repos
+with the same folder name would collide; rename one.
+
+### Move the index to another machine
+
+One file carries everything: a `.sumgrep` file is a zip of the Qdrant
+snapshot (vectors + pointers, all repos) and the summary cache (so future
+re-indexes skip the LLM). Its extension isn't `.zip` so browsers don't
+unzip it on download.
+
+On the source machine:
+
+```bash
+uv run sumgrep export                      # ~/Desktop/sumgrep-index-DATE.sumgrep, ~90 MB for 4k functions
+```
+
+On the target machine, once Docker Desktop, Ollama and uv are installed
+and the sumgrep code is there (step by step for macOS and Windows:
+`QUICKSTART.md`):
+
+```bash
+cd ~/sumgrep
+uv run sumgrep import /path/to/sumgrep-index-DATE.sumgrep
+```
+
+`import` works in four steps and asks before running anything:
+
+1. **Checks** Qdrant (offers to start or create the Docker container),
+   Ollama and `bge-m3` (offers to download it), and creates
+   `~/.sumgrep/sumgrep.toml` from the example if there is no settings
+   file. Anything it can't fix stops with one sentence saying what to do.
+2. **Loads** the index, replacing the existing one if you say yes, and
+   installs the summary cache only if this machine has none.
+3. **Test-searches** to prove Qdrant + Ollama + the index work together.
+4. **Connects** Claude Code (`claude mcp add`, if not already done). Say
+   no if you use the plugin.
+
+An older `.snapshot` from before 2026-10-12 still imports (no cache in
+it). For teammates without git, send the code as a zip:
+`git -C ~/sumgrep archive --format=zip --prefix=sumgrep/ -o ~/Desktop/sumgrep-code.zip HEAD`.
+
+The snapshot holds every indexed repo. For the MCP server the target's
+checkout can be at any path (pointers are repo-relative). The CLI
+(`meta`, `search`, `index --repo`) keys a repo by its folder name, so keep
+the same folder name if you will run it on the target. Only the
+embedding model must match (bge-m3); the summarizer
+model can differ, but a different one will re-summarize on the next
+`index`, since the cache is keyed per model.
+
+Without the snapshot, the summary cache alone is enough: the first
+`index` on the new machine re-embeds everything (~13 min for 4k
+functions) but makes no LLM calls.
+
+### Make Claude agents use it
+
+**Every interactive session** already has it once it's connected (§5b):
+the server's built-in instructions tell Claude when to call it.
+
+**Custom subagents** (`.claude/agents/*.md`) only get the tools you list.
+Add the MCP tool names (the plugin's names are in §5b):
+
+```yaml
+---
+name: code-locator
+description: Finds where a concept is implemented in this repo
+tools: mcp__sumgrep__search_code, mcp__sumgrep__index_status, Read, Grep, Glob
+---
+For "where is X" questions call search_code first, then Read the pointed
+file to confirm. Use Grep only for exact identifiers.
+```
+
+**Claude Agent SDK** (your own programs): pass the server in `mcpServers`
+and allow the tools:
+
+```python
+from claude_agent_sdk import query, ClaudeAgentOptions
+
+opts = ClaudeAgentOptions(
+    cwd="/path/to/indexed/repo",
+    mcp_servers={"sumgrep": {
+        "type": "stdio", "command": "uv",
+        "args": ["run", "--project", "/path/to/sumgrep",
+                 "python", "-m", "sumgrep.mcp_server"],
+    }},
+    allowed_tools=["mcp__sumgrep__search_code", "mcp__sumgrep__index_status",
+                   "Read", "Grep"],
+)
+```
+
+**Project scope for a team**: commit a `.mcp.json` in the target repo
+with the same stdio block, or have everyone install the plugin. Each
+teammate still needs Qdrant, Ollama, and an index on their own machine
+(or point `[qdrant].url` at a shared Qdrant).
+
+---
+
+## 6. Configuration: `sumgrep.toml`
+
+Put it at `~/.sumgrep/sumgrep.toml`, where every route finds it:
+
+```bash
+mkdir -p ~/.sumgrep && cp ~/sumgrep/sumgrep.toml.example ~/.sumgrep/sumgrep.toml
+```
+
+A `sumgrep.toml` in the sumgrep folder (or `--config FILE`) wins for the
+CLI and for a `claude mcp add` server, but the plugin doesn't see it.
+
+```toml
+[qdrant]
+url = "http://localhost:6333"
+collection = "sumgrep"
+
+[embed]
+model = "bge-m3"          # married to the collection; changing it = index --recreate
+
+[search]
+mode = "summary"          # summary | code | hybrid
+k = 10
+floor = 0.35
+code_weight = 1.0
+
+[summarize]
+provider = "ollama"       # ollama | anthropic | bedrock
+model = "qwen3.8:27b-mlx"
+max_words = 300
+num_ctx = 12000           # ollama: context window; must fit an 8k-char function
+think = false             # ollama: skip the reasoning pass
+temperature = 0.7
+top_p = 0.8
+presence_penalty = 1.5    # ollama: stops Qwen looping on tiny functions
+keep_alive = "10m"        # ollama: keep the model loaded between calls
+max_tokens = 1500
+
+[[repos]]
+name = "myrepo"
+path = "/path/to/myrepo"             # matched against --repo
+exclude = ["third_party/*"]          # glob patterns skipped when chunking
+```
+
+### Changing the summarizer model
+
+1. Edit `[summarize]`. Local: `ollama pull <model>` then set `model`.
+   Anthropic API: `provider = "anthropic"`, `model = "claude-haiku-4-5"`,
+   and `export ANTHROPIC_API_KEY=sk-ant-api...` in your shell. Never the
+   Claude Code login token.
+2. Test on a sample before committing:
+   `uv run sumgrep summarize --repo $REPO --sample 10`
+   Read the pairs. The mush score at the end should be well under 0.75.
+3. `uv run sumgrep summarize --repo $REPO`. Summaries are cached per
+   model, so a new model re-summarizes everything: ~47 h for 4k functions
+   on a local 27B, ~20 min and a few dollars on Haiku. Resumable; search
+   keeps using the old summaries meanwhile.
+4. `uv run sumgrep index --repo $REPO --recreate` (~13 min, no LLM calls:
+   every summary is now a cache hit). A plain `index` is not enough: it
+   skips every function whose code hasn't changed, so the old summaries
+   would stay in the index.
+
+Changing the prompt (`SYSTEM_PROMPT` in `src/sumgrep/summarizer.py`)
+works the same way, steps 2–4: the cache key includes a hash of the prompt.
+
+### Changing the embedding model
+
+Different story: the vector size is baked into the DB collection.
+Set `[embed].model`, then `uv run sumgrep index --repo $REPO --recreate`.
+Summaries are reused from cache; only the embedding step reruns (~13 min).
+
+---
+
+## 7. Where things live
+
+| Path | What |
+|---|---|
+| `~/.sumgrep/sumgrep.toml` | settings (§6) |
+| `~/.sumgrep/summaries.sqlite` | summary cache, keyed by (code fingerprint, model, prompt hash). Survives everything; safe to back up |
+| Qdrant volume `qdrant_storage` | the vector DB. Survives container restarts |
+| `src/sumgrep/summarizer.py` | the summary prompt |
+| `src/sumgrep/search.py` | retrieval and fusion |
+| `src/sumgrep/mcp_server.py` | the MCP server Claude Code talks to |
+| `.claude-plugin/` | the Claude Code plugin and its marketplace entry |
+| `~/.claude/CLAUDE.md` | global steering paragraph for Claude Code |
+
+---
+
+## 8. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Connection refused` on :6333 | Qdrant not running | Docker Desktop, then `docker start qdrant` |
+| `Connection refused` on :11434 | Ollama not running | open Ollama app / `brew services start ollama` |
+| `sumgrep is not configured: no sumgrep.toml found` | no settings file where the server looks | create `~/.sumgrep/sumgrep.toml` (§6) |
+| plugin shows failed in `/mcp` | first start was still installing, or `uv` not on PATH | reconnect in `/mcp`; check `uv --version` in a new terminal |
+| search returns junk for a question you know has an answer | try `--mode summary`; check the target's summary with `summaries --symbol` | fix the summary prompt if the paragraph is bad |
+| `0 of 1 chunks have a cached summary` | function edited since last index | `uv run sumgrep index --repo $REPO` |
+| index: `collection has 1024-dim vectors but ... produces N` | embedding model changed | `index --recreate` |
+| `repo config: NONE` in index output | `--repo` path doesn't match a `[[repos]]` entry | fix the path in sumgrep.toml; excludes won't apply otherwise |
+| summaries loop / repeat themselves | Qwen without penalty | keep `presence_penalty = 1.5`, `think = false` |
+
+---
+
+## License
+
+MIT, see `LICENSE`.

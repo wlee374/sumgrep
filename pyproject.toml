@@ -1,0 +1,33 @@
+[project]
+name = "sumgrep"
+version = "0.1.0"
+description = "Semantic code search for Claude Code: functions indexed by LLM-written summaries; search returns pointers, never code."
+readme = "README.md"
+authors = [
+    { name = "Wonjun Lee" }
+]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["mcp", "claude-code", "semantic-search", "code-search", "qdrant", "ollama"]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.2.0",
+    "mcp[cli]>=2.1.1",
+    "ollama>=0.6.2",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.19.0",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.15.8",
+    "typer>=0.27.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/wlee374/sumgrep"
+
+[project.scripts]
+sumgrep = "sumgrep.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.12.6,<0.13.0"]
+build-backend = "uv_build"

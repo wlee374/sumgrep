@@ -1,0 +1,17 @@
+{
+  "name": "sumgrep",
+  "version": "0.1.0",
+  "description": "Semantic code search by meaning: every function gets an LLM-written summary; search_code returns pointers (function, repo-relative file, lines), never code. Needs local Qdrant (Docker), Ollama with bge-m3, and uv.",
+  "author": { "name": "Wonjun Lee", "url": "https://github.com/wlee374" },
+  "homepage": "https://github.com/wlee374/sumgrep",
+  "repository": "https://github.com/wlee374/sumgrep",
+  "license": "MIT",
+  "keywords": ["semantic-search", "code-search", "mcp", "qdrant", "ollama", "embeddings"],
+  "mcpServers": {
+    "sumgrep": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "sumgrep.mcp_server"],
+      "env": { "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv" }
+    }
+  }
+}
