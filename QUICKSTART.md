@@ -2,7 +2,8 @@
 
 You got a `.sumgrep` file. This page sets up your computer so Claude Code
 can search that code **by meaning** ("where do we handle login?").
-It takes about 15 minutes, once. Works on macOS and Windows.
+It takes about 15 minutes, once. Tested on macOS; the Windows steps are
+included but not tested yet, so tell whoever sent you the file if one fails.
 
 ---
 
