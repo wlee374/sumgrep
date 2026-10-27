@@ -414,9 +414,10 @@ The same tools over HTTP or HTTPS, as a shared server runs them (§5c):
 ```bash
 cd ~/sumgrep && uv run sumgrep serve
 # [sumgrep] serving http://0.0.0.0:8000/mcp · config ... ·   Ctrl-C to quit
+# [sumgrep] search log /Users/you/.sumgrep/searches.jsonl
 ```
 
-Address and HTTPS come from `[server]` in `sumgrep.toml` (§6).
+Address, HTTPS and the search log come from `[server]` in `sumgrep.toml` (§6).
 
 ---
 
@@ -501,6 +502,12 @@ cd ~/sumgrep && uv run sumgrep serve
 
 HTTP on port 8000 by default. For HTTPS, set `https = true`, `tls_cert`
 and `tls_key` in `[server]` of `~/.sumgrep/sumgrep.toml` (§6).
+
+It writes every search to `~/.sumgrep/searches.jsonl` on the server: the
+question, the results, and which machine asked (50 MB at most; it
+rotates itself). Teammates' own session histories never reach you, so
+this is where you see what they search for and where it misses. Tell
+them it's logged. Format and use: `SETUP.md` §7b, Logs.
 
 Then commit two files to the indexed repo, and teammates run nothing:
 
@@ -594,6 +601,7 @@ address = "0.0.0.0:8000"  # HOST:PORT it listens on
 https = false             # true: https with the two files below
 tls_cert = ""             # PEM certificate (the full chain, if it came with one)
 tls_key = ""              # PEM key, no password
+search_log = "~/.sumgrep/searches.jsonl"   # every search, one JSON line; 50 MB at most; "" = off
 
 [summarize]
 provider = "ollama"       # ollama | anthropic | bedrock

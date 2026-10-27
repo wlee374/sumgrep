@@ -387,18 +387,27 @@ file path and summary.
 
 1. Follow §1.1–1.3 and §2: uv, Docker + Qdrant, Ollama + bge-m3, the
    sumgrep folder. No summarizer, no `[[repos]]` entry and no GPU: the
-   server never indexes, it only embeds the question. One change in §1.2:
-   publish Qdrant on this machine only, so nobody on the network can
-   reach it (it has no login either, and anyone reaching it could delete
-   the index; on Linux, Docker's published ports bypass `ufw`):
+   server never indexes, it only embeds the question. Two changes in
+   §1.2. Publish Qdrant on this machine only, so nobody on the network
+   can reach it (it has no login either, and anyone reaching it could
+   delete the index; on Linux, Docker's published ports bypass `ufw`).
+   And cap its log: Qdrant writes a line for every request, and Docker
+   keeps a container's log forever unless told otherwise (here: 3 files
+   of 10 MB):
 
    ```bash
    docker run -d --name qdrant \
      -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \
+     --log-opt max-size=10m --log-opt max-file=3 \
      -v qdrant_storage:/qdrant/storage \
      qdrant/qdrant
    docker update --restart unless-stopped qdrant
    ```
+
+   Qdrant already running from §1.2? A container's ports and log
+   settings can't be changed, so `docker rm -f qdrant` first, then the
+   command above. The index is kept: it lives in the `qdrant_storage`
+   volume, not in the container.
 
    Ollama listens on this machine only by default; leave it that way.
 
@@ -411,6 +420,7 @@ file path and summary.
    cd ~/sumgrep
    uv run sumgrep serve
    # [sumgrep] serving http://0.0.0.0:8000/mcp · config ... · no auth: private network only
+   # [sumgrep] search log /home/you/.sumgrep/searches.jsonl
    ```
 
    It takes its settings from `[server]` in `~/.sumgrep/sumgrep.toml`
@@ -423,6 +433,7 @@ file path and summary.
    https = false
    tls_cert = ""
    tls_key = ""
+   search_log = "~/.sumgrep/searches.jsonl"   # every search (Logs, below); "" = off
    ```
 
    **Or HTTPS**, if you have a certificate for the server's hostname: set
@@ -511,6 +522,43 @@ file path and summary.
    ```
 
    If macOS asks whether Python may accept incoming connections, allow it.
+
+### Logs
+
+- **The server's own log** (`journalctl -u sumgrep`, or
+  `~/.sumgrep/server.log` on macOS): the start lines and errors only, no
+  line per request, so it stays small.
+- **The search log**, `~/.sumgrep/searches.jsonl`: one line per search.
+  It is the only record of what teammates ask; their session histories
+  stay on their machines. At 10 MB it moves to `searches.jsonl.1` (the
+  older ones shift up) and 5 files are kept: 50 MB at most, roughly
+  30,000 searches. `search_log` in `[server]` changes the path, `""`
+  turns it off. It holds questions about your code: keep it on this
+  machine, and tell teammates their searches are logged.
+- **Qdrant's log**: capped at 30 MB by step 1.
+- **Ollama's log**: on Linux in the journal, which the system trims; the
+  macOS app keeps its last 5 files. With `brew services`, nothing trims
+  it; it grows slowly (a line per search, more when the model reloads).
+
+A search-log line (one result shown; real ones have up to `k`):
+
+```json
+{"time": "2026-10-27T04:53:06+00:00", "client": "10.0.0.23", "query": "where do we retry failed uploads", "k": 10, "mode": "summary", "repo": null, "commits": {"myrepo": "1f3c9e2a7b"}, "ms": 150, "hits": [{"symbol": "uploadWithRetry", "path": "storage/upload.go", "start": 40, "end": 88, "kind": "function", "cos": 0.61}]}
+```
+
+`time` is UTC. `client` is the address of the machine that asked. `k`
+and `mode` are what was used, after defaults; `repo` is `null` when all
+repos were searched. `commits` is each repo's indexed commit, and `cos`
+is how similar a result was. A search that couldn't run has `"error"`
+(the message the agent got) instead of `hits`; one that found nothing
+above the floor has `"hits": []`.
+
+Using it: likely misses are one machine asking the same thing in new
+words a few minutes apart, and results that look unrelated to each
+other. Check those against the code. Add the ones sumgrep should have
+found to your eval queries file (kept outside this repo), so
+`uv run sumgrep eval --repo $REPO --queries FILE` measures the next
+change.
 
 ### Teammates
 
@@ -630,6 +678,7 @@ ollama list                       # models present
 | `[server] address must be HOST:PORT` | malformed `address` | e.g. `address = "0.0.0.0:8000"` |
 | `[server] https = true needs tls_cert and tls_key` | a path is empty | set both paths in `[server]`, or `https = false` |
 | `[server] cannot use tls_cert=… / tls_key=…` | file missing or unreadable, key doesn't match the certificate, or key has a password | fix the path or permissions; use the matching key without a password |
+| `[server] cannot write search_log=…` | the folder can't be created or written by the user the server runs as | point `search_log` at a folder that user owns, or `search_log = ""` to turn it off |
 | HTTPS: `✘ Failed to connect` with a certificate error (e.g. `SELF_SIGNED_CERT`) | the address isn't the hostname on the certificate, or that machine doesn't trust the issuer | use the hostname on the certificate; for a self-signed or company certificate set `NODE_EXTRA_CA_CERTS` (§7b step 3) |
 | `address already in use` when the shared server starts | another program has the port | pick another port in `[server] address`, and in the teammates' URL |
 

@@ -43,6 +43,7 @@ class ServerCfg:
     https: bool = False             # true: serve https with tls_cert + tls_key
     tls_cert: str = ""              # PEM certificate (the full chain, if it came with one)
     tls_key: str = ""               # PEM private key, no password
+    search_log: str = "~/.sumgrep/searches.jsonl"   # one JSON line per search; "" = off
 
 
 @dataclass

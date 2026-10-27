@@ -32,6 +32,10 @@ claude mcp add --scope user --transport http sumgrep http://10.0.0.5:8000/mcp
 
 Then go to step 4. Nothing else to install.
 
+The server keeps a log of what is searched: the question, the results,
+and your computer's network address. Whoever runs it uses that to make
+search better.
+
 If it says `already exists`, sumgrep was set up on this computer before.
 Run `claude mcp remove --scope user sumgrep`, then the command again.
 
@@ -177,4 +181,4 @@ git -C ~/sumgrep archive --format=zip --prefix=sumgrep/ -o ~/Desktop/sumgrep-cod
 ```
 
 Or run one shared server for everyone (`SETUP.md` §7b) and send people
-only its address.
+only its address. It logs every search; tell people.

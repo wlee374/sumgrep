@@ -20,6 +20,8 @@ address = "0.0.0.0:8000"   # HOST:PORT to listen on; 0.0.0.0 = every network thi
 https = false              # true: serve https with the two files below
 tls_cert = ""              # e.g. "/etc/ssl/sumgrep/fullchain.pem" (the full chain, if you have one)
 tls_key = ""               # e.g. "/etc/ssl/sumgrep/key.pem" (no password)
+search_log = "~/.sumgrep/searches.jsonl"   # every search, one JSON line; at 10 MB it rotates,
+                                           # 5 files kept (50 MB at most); "" = off
 
 [summarize]
 # Default: a local model that runs on any OS with ~8 GB of free RAM. No API
