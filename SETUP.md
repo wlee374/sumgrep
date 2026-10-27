@@ -374,9 +374,9 @@ Copy the `.sumgrep` file over, then on the target follow §1, §2, §3 Path A
 
 ## 7b. One shared server for a team
 
-One machine runs Qdrant, Ollama and the sumgrep server over HTTP.
-Teammates connect Claude Code to it with one command and install nothing
-else. Everyone searches the same index.
+One machine runs Qdrant, Ollama and the sumgrep server over HTTP or
+HTTPS. Teammates connect Claude Code to it and install nothing else.
+Everyone searches the same index.
 
 There is **no login**: anyone who can reach the server's port can search.
 Run it only where just your team can reach it (office network or VPN).
@@ -417,7 +417,27 @@ file path and summary.
    machine is on; put one of its addresses there to listen on that one
    only. Without `SUMGREP_HTTP` the server speaks stdio as in §4.1.
 
-4. **Check** from another machine on the same network:
+   **Or HTTPS**, if you have a certificate for the server's hostname: add
+   its two PEM files (the key without a password):
+
+   ```bash
+   cd ~/sumgrep
+   SUMGREP_HTTP=0.0.0.0:8000 SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem \
+     uv run python -m sumgrep.mcp_server
+   # [sumgrep] serving https://0.0.0.0:8000/mcp (no auth: private network only)
+   ```
+
+   Teammates then use `https://HOSTNAME:8000/mcp` everywhere this
+   section says `http://SERVER:8000/mcp`, with the hostname written on the
+   certificate. A certificate from a public authority (Let's Encrypt and
+   the like) works on their machines as is. A self-signed one is refused
+   until each machine trusts it (`NODE_EXTRA_CA_CERTS=/path/to/cert.pem`
+   in the environment Claude Code starts from); one from a company
+   authority may need the same. HTTPS encrypts the traffic; it adds no
+   login.
+
+4. **Check** from another machine on the same network (with HTTPS, the
+   `https://` address):
 
    ```bash
    claude mcp add --transport http sumgrep-test http://SERVER:8000/mcp
@@ -440,6 +460,9 @@ file path and summary.
    [Service]
    User=YOU
    Environment=SUMGREP_HTTP=0.0.0.0:8000
+   # HTTPS: also these two (YOU must be able to read the key)
+   # Environment=SUMGREP_TLS_CERT=/path/to/cert.pem
+   # Environment=SUMGREP_TLS_KEY=/path/to/key.pem
    ExecStart=/home/YOU/.local/bin/uv run --project /home/YOU/sumgrep python -m sumgrep.mcp_server
    Restart=on-failure
 
@@ -476,6 +499,12 @@ file path and summary.
      <dict>
        <key>SUMGREP_HTTP</key>
        <string>0.0.0.0:8000</string>
+       <!-- HTTPS: also these two
+       <key>SUMGREP_TLS_CERT</key>
+       <string>/path/to/cert.pem</string>
+       <key>SUMGREP_TLS_KEY</key>
+       <string>/path/to/key.pem</string>
+       -->
      </dict>
      <key>RunAtLoad</key>
      <true/>
@@ -496,32 +525,35 @@ file path and summary.
 
 ### Teammates
 
-Each runs one command, on the office network or VPN:
+Recommended: teammates run nothing. Commit two files to the root of the
+indexed repo:
+
+1. `.mcp.json`, so Claude Code connects. It asks each teammate once, in
+   that repo, whether to use it (with HTTPS, the `https://` address):
+
+   ```json
+   {
+     "mcpServers": {
+       "sumgrep": { "type": "http", "url": "http://SERVER:8000/mcp" }
+     }
+   }
+   ```
+
+2. The §4.2 paragraph in the repo's `CLAUDE.md` (create it if there is
+   none). A connected server alone rarely gets used: Claude Code follows
+   `CLAUDE.md` as instructions and treats the server's own text as
+   background. It only says *when* to use sumgrep, so it never needs
+   updating.
+
+Each teammate then: be on the office network or VPN, pull the repo, open
+Claude Code in it, and say yes when it asks to use `sumgrep`.
+
+Without the committed `.mcp.json`, each teammate runs this once instead
+(and still gets the note from the repo's `CLAUDE.md`):
 
 ```bash
 claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
 ```
-
-Or nobody runs anything: commit this `.mcp.json` to the root of the
-indexed repo, and Claude Code asks each teammate once, in that repo,
-whether to use it:
-
-```json
-{
-  "mcpServers": {
-    "sumgrep": { "type": "http", "url": "http://SERVER:8000/mcp" }
-  }
-}
-```
-
-Commit the §4.2 paragraph next to it, in the repo's `CLAUDE.md` (at the
-repo root; create it if there is none). A connected server alone rarely
-gets used: Claude Code follows `CLAUDE.md` as instructions and treats the
-server's own text as background. With both files in the repo, everyone
-who opens it gets the server and the note to use it, with no setup.
-Teammates who connect another way (the command above, or `import`) get
-the note too, and can skip QUICKSTART step 4. It only says *when* to use
-sumgrep, so it never needs updating.
 
 Anyone who set sumgrep up locally before removes that first:
 `claude mcp remove --scope user sumgrep` (after `import` or §4.1 Option
@@ -607,6 +639,9 @@ ollama list                       # models present
 | `index` is slow | a local model: ~9 s per changed function with the default, ~40 s with a 27B, more without a GPU | let it run; or switch `[summarize]` to Anthropic |
 | shared server: `claude mcp list` shows `✘ Failed to connect` | server not running, wrong address, or this machine isn't on the server's network | on the server: `systemctl status sumgrep` (Linux) or the log (§7b); here: office network or VPN on? |
 | `SUMGREP_HTTP must be HOST:PORT` | malformed value | e.g. `0.0.0.0:8000` |
+| `https needs both SUMGREP_TLS_CERT and SUMGREP_TLS_KEY` | only one is set | set both for HTTPS, neither for HTTP |
+| `cannot use SUMGREP_TLS_CERT=… / SUMGREP_TLS_KEY=…` | file missing or unreadable, key doesn't match the certificate, or key has a password | fix the path or permissions; use the matching key without a password |
+| HTTPS: `✘ Failed to connect` with a certificate error (e.g. `SELF_SIGNED_CERT`) | the address isn't the hostname on the certificate, or that machine doesn't trust the issuer | use the hostname on the certificate; for a self-signed or company certificate set `NODE_EXTRA_CA_CERTS` (§7b step 3) |
 | `address already in use` when the shared server starts | another program has the port | pick another port in `SUMGREP_HTTP`, and in the teammates' URL |
 
 ---

@@ -369,6 +369,7 @@ either of the above. Nothing else to install:
 claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
 ```
 
+If the server uses HTTPS, the address is `https://HOSTNAME:8000/mcp`.
 Same tool names as the clone registration.
 
 **What it returns.** Pointers, exactly as stored in the index: function
@@ -415,7 +416,9 @@ SUMGREP_HTTP=127.0.0.1:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_ser
 # [sumgrep] serving http://127.0.0.1:8000/mcp ...   Ctrl-C to quit
 ```
 
-`SUMGREP_HTTP` is `HOST:PORT`; unset, the server speaks stdio.
+`SUMGREP_HTTP` is `HOST:PORT`; unset, the server speaks stdio. Add
+`SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem`
+to serve HTTPS instead (both PEM files, the key without a password).
 
 ---
 
@@ -490,22 +493,25 @@ functions) but makes no LLM calls.
 ### One shared server for the team
 
 Instead of every teammate running Docker, Ollama and an imported index,
-one machine runs them plus the sumgrep server over HTTP, and everyone
-connects Claude Code to it:
+one machine runs them plus the sumgrep server over HTTP or HTTPS, and
+everyone's Claude Code connects to it:
 
 ```bash
 # on the server machine (Qdrant, Ollama + bge-m3, index loaded)
 SUMGREP_HTTP=0.0.0.0:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
-
-# each teammate, once
-claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
+# HTTPS instead: also set SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem
 ```
 
-Or commit a `.mcp.json` with `{"mcpServers": {"sumgrep": {"type":
-"http", "url": "http://SERVER:8000/mcp"}}}` to the indexed repo; Claude
-Code asks each teammate once whether to use it. Commit the steering
-paragraph (`SETUP.md` §4.2) in that repo's `CLAUDE.md` too: without it,
-agents mostly keep using Grep.
+Then commit two files to the indexed repo, and teammates run nothing:
+
+- `.mcp.json` with `{"mcpServers": {"sumgrep": {"type": "http", "url":
+  "http://SERVER:8000/mcp"}}}` (or the `https://HOSTNAME:8000/mcp`
+  address). Claude Code asks each teammate once whether to use it.
+- The steering paragraph (`SETUP.md` §4.2) in the repo's `CLAUDE.md`.
+  Without it, agents mostly keep using Grep.
+
+Without the `.mcp.json`, each teammate runs once:
+`claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp`.
 
 There is **no login**: anyone who can reach the port can search, and the
 index holds every function name, path and summary. Run it only on the
@@ -661,6 +667,7 @@ Summaries are reused from cache; only the embedding step reruns (~13 min).
 | `repo config: NONE` in index output | `--repo` path doesn't match a `[[repos]]` entry | fix the path in sumgrep.toml; excludes won't apply otherwise |
 | summaries loop / repeat themselves | Qwen without penalty | keep `presence_penalty = 1.5`, `think = false` |
 | shared server: `claude mcp list` shows `✘ Failed to connect` | server down, wrong address, or not on its network | office network / VPN on? server running? (`SETUP.md` §7b) |
+| shared server over HTTPS: `✘ Failed to connect` with a certificate error | address isn't the hostname on the certificate, or the machine doesn't trust its issuer | `SETUP.md` §7b step 3 (`NODE_EXTRA_CA_CERTS`) |
 
 ---
 

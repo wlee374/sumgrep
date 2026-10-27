@@ -3,7 +3,8 @@
 This page sets up Claude Code so it can search your team's code **by
 meaning** ("where do we handle login?").
 
-- **You got a server address** (like `http://10.0.0.5:8000/mcp`): your
+- **You got a server address** (like `http://10.0.0.5:8000/mcp`, or one
+  starting with `https://`): your
   team runs one shared sumgrep. You need only Claude Code. Do
   **Shared server** just below, then steps 4 and 5.
 - **You got a `.sumgrep` file:** do steps 1–5. It takes about 15
@@ -12,10 +13,18 @@ meaning** ("where do we handle login?").
 
 ---
 
-## Shared server (one command)
+## Shared server
 
-Be on the office network or VPN, where the server is. In Terminal
-(macOS) or PowerShell (Windows), paste this with your address at the end:
+Be on the office network or VPN, where the server is.
+
+**If your team set it up in the project** (the project has a
+`.mcp.json` file): pull the project, open Claude Code in it, and say yes
+when it asks whether to use `sumgrep`. Then go to step 4 (your team has
+usually done it for you too).
+
+**Otherwise**, in Terminal (macOS) or PowerShell (Windows), paste this
+with your address at the end, exactly as you were given it (`http://` or
+`https://`):
 
 ```bash
 claude mcp add --scope user --transport http sumgrep http://10.0.0.5:8000/mcp
@@ -25,10 +34,6 @@ Then go to step 4. Nothing else to install.
 
 If it says `already exists`, sumgrep was set up on this computer before.
 Run `claude mcp remove --scope user sumgrep`, then the command again.
-
-If Claude Code asks whether to use the `sumgrep` server from your
-project's `.mcp.json`, say yes: your team set it up there for you, and
-you don't need the command at all.
 
 ---
 
@@ -153,7 +158,7 @@ Claude looks it up with sumgrep, then opens the file.
 | `STOPPED: Docker Desktop is not running` | Open Docker Desktop, wait until it says *Engine running*. |
 | `STOPPED: Ollama is not running` | Open the Ollama app. |
 | Claude never uses sumgrep | Start a **new** session. Type `/mcp` in Claude Code: `sumgrep` should be listed. Then check step 4 is done. |
-| Shared server: `/mcp` says sumgrep failed | Turn on the VPN (or join the office network), then start a new session. Still failing: ask whoever runs the server. |
+| Shared server: `/mcp` says sumgrep failed | Turn on the VPN (or join the office network), then start a new session. Still failing, or the message mentions a certificate: ask whoever runs the server. |
 
 ---
 
