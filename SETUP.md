@@ -409,23 +409,27 @@ file path and summary.
 
    ```bash
    cd ~/sumgrep
-   SUMGREP_HTTP=0.0.0.0:8000 uv run python -m sumgrep.mcp_server
-   # [sumgrep] serving http://0.0.0.0:8000/mcp (no auth: private network only)
+   uv run sumgrep serve
+   # [sumgrep] serving http://0.0.0.0:8000/mcp · config ... · no auth: private network only
    ```
 
-   `SUMGREP_HTTP` is `HOST:PORT`. `0.0.0.0` listens on every network the
-   machine is on; put one of its addresses there to listen on that one
-   only. Without `SUMGREP_HTTP` the server speaks stdio as in §4.1.
+   It takes its settings from `[server]` in `~/.sumgrep/sumgrep.toml`
+   (copied from the example in §2; a settings file without the section
+   gets these same defaults):
 
-   **Or HTTPS**, if you have a certificate for the server's hostname: add
-   its two PEM files (the key without a password):
-
-   ```bash
-   cd ~/sumgrep
-   SUMGREP_HTTP=0.0.0.0:8000 SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem \
-     uv run python -m sumgrep.mcp_server
-   # [sumgrep] serving https://0.0.0.0:8000/mcp (no auth: private network only)
+   ```toml
+   [server]
+   address = "0.0.0.0:8000"   # HOST:PORT; 0.0.0.0 = every network the machine is on
+   https = false
+   tls_cert = ""
+   tls_key = ""
    ```
+
+   **Or HTTPS**, if you have a certificate for the server's hostname: set
+   `https = true`, `tls_cert` to the certificate file (the full chain if
+   it came with one, e.g. `fullchain.pem`) and `tls_key` to its key file
+   (without a password), then run `uv run sumgrep serve` again. It prints
+   `serving https://...`.
 
    Teammates then use `https://HOSTNAME:8000/mcp` everywhere this
    section says `http://SERVER:8000/mcp`, with the hostname written on the
@@ -447,7 +451,8 @@ file path and summary.
    ```
 
 5. Keep it running (stop the one from step 3 first). The path to `uv` is
-   what `which uv` prints.
+   what `which uv` prints. Settings still come from `[server]`; with
+   HTTPS, the user it runs as must be able to read the key file.
 
    **Linux**, `/etc/systemd/system/sumgrep.service`:
 
@@ -459,11 +464,7 @@ file path and summary.
 
    [Service]
    User=YOU
-   Environment=SUMGREP_HTTP=0.0.0.0:8000
-   # HTTPS: also these two (YOU must be able to read the key)
-   # Environment=SUMGREP_TLS_CERT=/path/to/cert.pem
-   # Environment=SUMGREP_TLS_KEY=/path/to/key.pem
-   ExecStart=/home/YOU/.local/bin/uv run --project /home/YOU/sumgrep python -m sumgrep.mcp_server
+   ExecStart=/home/YOU/.local/bin/uv run --project /home/YOU/sumgrep sumgrep serve
    Restart=on-failure
 
    [Install]
@@ -491,21 +492,9 @@ file path and summary.
        <string>run</string>
        <string>--project</string>
        <string>/Users/YOU/sumgrep</string>
-       <string>python</string>
-       <string>-m</string>
-       <string>sumgrep.mcp_server</string>
+       <string>sumgrep</string>
+       <string>serve</string>
      </array>
-     <key>EnvironmentVariables</key>
-     <dict>
-       <key>SUMGREP_HTTP</key>
-       <string>0.0.0.0:8000</string>
-       <!-- HTTPS: also these two
-       <key>SUMGREP_TLS_CERT</key>
-       <string>/path/to/cert.pem</string>
-       <key>SUMGREP_TLS_KEY</key>
-       <string>/path/to/key.pem</string>
-       -->
-     </dict>
      <key>RunAtLoad</key>
      <true/>
      <key>KeepAlive</key>
@@ -638,11 +627,11 @@ ollama list                       # models present
 | summaries repeat themselves in loops | Qwen without penalties | keep `presence_penalty = 1.5`, `think = false` |
 | `index` is slow | a local model: ~9 s per changed function with the default, ~40 s with a 27B, more without a GPU | let it run; or switch `[summarize]` to Anthropic |
 | shared server: `claude mcp list` shows `✘ Failed to connect` | server not running, wrong address, or this machine isn't on the server's network | on the server: `systemctl status sumgrep` (Linux) or the log (§7b); here: office network or VPN on? |
-| `SUMGREP_HTTP must be HOST:PORT` | malformed value | e.g. `0.0.0.0:8000` |
-| `https needs both SUMGREP_TLS_CERT and SUMGREP_TLS_KEY` | only one is set | set both for HTTPS, neither for HTTP |
-| `cannot use SUMGREP_TLS_CERT=… / SUMGREP_TLS_KEY=…` | file missing or unreadable, key doesn't match the certificate, or key has a password | fix the path or permissions; use the matching key without a password |
+| `[server] address must be HOST:PORT` | malformed `address` | e.g. `address = "0.0.0.0:8000"` |
+| `[server] https = true needs tls_cert and tls_key` | a path is empty | set both paths in `[server]`, or `https = false` |
+| `[server] cannot use tls_cert=… / tls_key=…` | file missing or unreadable, key doesn't match the certificate, or key has a password | fix the path or permissions; use the matching key without a password |
 | HTTPS: `✘ Failed to connect` with a certificate error (e.g. `SELF_SIGNED_CERT`) | the address isn't the hostname on the certificate, or that machine doesn't trust the issuer | use the hostname on the certificate; for a self-signed or company certificate set `NODE_EXTRA_CA_CERTS` (§7b step 3) |
-| `address already in use` when the shared server starts | another program has the port | pick another port in `SUMGREP_HTTP`, and in the teammates' URL |
+| `address already in use` when the shared server starts | another program has the port | pick another port in `[server] address`, and in the teammates' URL |
 
 ---
 

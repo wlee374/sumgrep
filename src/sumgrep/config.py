@@ -1,7 +1,7 @@
 # src/sumgrep/config.py
 """Loads sumgrep.toml. Looks in ./sumgrep.toml, then ~/.sumgrep/sumgrep.toml.
 
-Sections: [qdrant], [embed], [summarize], [search], [[repos]]."""
+Sections: [qdrant], [embed], [summarize], [search], [server], [[repos]]."""
 from __future__ import annotations
 
 import tomllib
@@ -38,6 +38,14 @@ class SearchCfg:
 
 
 @dataclass
+class ServerCfg:
+    address: str = "0.0.0.0:8000"   # HOST:PORT the shared server (`sumgrep serve`) listens on
+    https: bool = False             # true: serve https with tls_cert + tls_key
+    tls_cert: str = ""              # PEM certificate (the full chain, if it came with one)
+    tls_key: str = ""               # PEM private key, no password
+
+
+@dataclass
 class RepoCfg:
     name: str
     path: str
@@ -48,6 +56,7 @@ class RepoCfg:
 class Config:
     summarize: SummarizeCfg = field(default_factory=SummarizeCfg)
     search: SearchCfg = field(default_factory=SearchCfg)
+    server: ServerCfg = field(default_factory=ServerCfg)
     repos: list[RepoCfg] = field(default_factory=list)
     embed_model: str = "bge-m3"
     qdrant_url: str = "http://localhost:6333"
@@ -70,6 +79,7 @@ def load_config(path: Path | None = None) -> Config:
             cfg = Config(
                 summarize=_pick(SummarizeCfg, data.get("summarize", {})),
                 search=_pick(SearchCfg, data.get("search", {})),
+                server=_pick(ServerCfg, data.get("server", {})),
                 repos=[_pick(RepoCfg, r) for r in data.get("repos", [])],
                 embed_model=data.get("embed", {}).get("model", "bge-m3"),
                 qdrant_url=data.get("qdrant", {}).get("url", "http://localhost:6333"),

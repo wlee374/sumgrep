@@ -15,6 +15,12 @@ k = 10                # pointers returned (5 -> 10 on 2026-10-12: 4 of 5 reused 
 floor = 0.35          # drop hits whose best cosine is below this
 code_weight = 1.0     # hybrid only: scale of the code arm (summary arm = 1.0)
 
+[server]              # only for one shared team server: uv run sumgrep serve (SETUP.md §7b)
+address = "0.0.0.0:8000"   # HOST:PORT to listen on; 0.0.0.0 = every network this machine is on
+https = false              # true: serve https with the two files below
+tls_cert = ""              # e.g. "/etc/ssl/sumgrep/fullchain.pem" (the full chain, if you have one)
+tls_key = ""               # e.g. "/etc/ssl/sumgrep/key.pem" (no password)
+
 [summarize]
 # Default: a local model that runs on any OS with ~8 GB of free RAM. No API
 # key, and your code never leaves the machine. First: ollama pull qwen3.5:9b

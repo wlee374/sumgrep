@@ -21,12 +21,12 @@ $SUMGREP_CONFIG or ~/.sumgrep/sumgrep.toml apply.
 Run:   uv run --project ~/sumgrep python -m sumgrep.mcp_server
 Never print to stdout here — stdout is the MCP transport. Log to stderr.
 
-Shared: SUMGREP_HTTP=0.0.0.0:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
-serves the same tools at http://HOST:8000/mcp, one server for a whole team
-(`claude mcp add --transport http sumgrep http://HOST:8000/mcp`). Set
-SUMGREP_TLS_CERT and SUMGREP_TLS_KEY (PEM files) to serve https instead.
-There is no authentication either way: anyone who can reach the port can
-search, so run it only on a private network (office LAN or VPN).
+Shared: `uv run sumgrep serve` (serve() below) serves the same tools at
+http://HOST:8000/mcp, one server for a whole team (`claude mcp add
+--transport http sumgrep http://HOST:8000/mcp`). Address and https (cert +
+key) come from [server] in sumgrep.toml. There is no authentication either
+way: anyone who can reach the port can search, so run it only on a private
+network (office LAN or VPN).
 """
 from __future__ import annotations
 
@@ -210,46 +210,44 @@ def _http_address(value: str) -> tuple[str, int]:
     """'HOST:PORT' (or just 'PORT' = all interfaces) -> (host, port)."""
     host, _, port = value.rpartition(":")
     if not port.isdigit():
-        sys.exit(f"[sumgrep] SUMGREP_HTTP must be HOST:PORT, got {value!r}")
+        sys.exit(f"[sumgrep] [server] address must be HOST:PORT, got {value!r}")
     return host.strip("[]") or "0.0.0.0", int(port)
 
 
-def _tls_files() -> tuple[str, str] | None:
-    """(cert, key) from SUMGREP_TLS_CERT / SUMGREP_TLS_KEY; None = plain http."""
+def _tls_files(sc) -> tuple[str, str]:
+    """[server] tls_cert / tls_key, checked here so errors aren't uvicorn tracebacks."""
     import ssl
 
-    cert, key = os.environ.get("SUMGREP_TLS_CERT"), os.environ.get("SUMGREP_TLS_KEY")
-    if not cert and not key:
-        return None
-    if not (cert and key):
-        sys.exit("[sumgrep] https needs both SUMGREP_TLS_CERT and SUMGREP_TLS_KEY "
-                 "(set neither for http)")
-    cert, key = str(Path(cert).expanduser()), str(Path(key).expanduser())
-    try:                                         # fail here, not inside uvicorn
+    if not (sc.tls_cert and sc.tls_key):
+        sys.exit("[sumgrep] [server] https = true needs tls_cert and tls_key")
+    cert, key = str(Path(sc.tls_cert).expanduser()), str(Path(sc.tls_key).expanduser())
+    try:
         ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert, key)
     except (OSError, ssl.SSLError) as e:
-        sys.exit(f"[sumgrep] cannot use SUMGREP_TLS_CERT={cert} / SUMGREP_TLS_KEY={key}: {e}")
+        sys.exit(f"[sumgrep] [server] cannot use tls_cert={cert} / tls_key={key}: {e}")
     return cert, key
+
+
+def serve(cfg) -> None:
+    """The shared team server (`sumgrep serve`): the same tools over HTTP or
+    HTTPS, as set in [server]. Stateless: the tools keep nothing between
+    calls, so each request stands alone and clients survive a restart."""
+    import uvicorn
+
+    sc = cfg.server
+    host, port = _http_address(sc.address)
+    cert, key = _tls_files(sc) if sc.https else (None, None)
+    os.environ["SUMGREP_CONFIG"] = str(cfg.source)   # tools read the same file
+    _log(f"serving {'https' if sc.https else 'http'}://{host}:{port}/mcp · config "
+         f"{cfg.source} · no auth: private network only")
+    app = mcp.streamable_http_app(stateless_http=True, host=host)
+    uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key,
+                log_level=mcp.settings.log_level.lower())
 
 
 def main() -> None:
     _log(f"starting · project {PROJECT_ROOT}")
-    http = os.environ.get("SUMGREP_HTTP")
-    if not http:
-        mcp.run(transport="stdio")
-        return
-    import uvicorn
-
-    host, port = _http_address(http)
-    tls = _tls_files()
-    _log(f"serving {'https' if tls else 'http'}://{host}:{port}/mcp "
-         "(no auth: private network only)")
-    # Stateless: the tools keep nothing between calls, so each request
-    # stands alone and clients survive a server restart.
-    app = mcp.streamable_http_app(stateless_http=True, host=host)
-    cert, key = tls or (None, None)
-    uvicorn.run(app, host=host, port=port, ssl_certfile=cert, ssl_keyfile=key,
-                log_level=mcp.settings.log_level.lower())
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

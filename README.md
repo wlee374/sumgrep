@@ -409,16 +409,14 @@ uv run --project ~/sumgrep python -m sumgrep.mcp_server
 Logs from a running server: `~/.claude/` debug logs, or start the server
 from a terminal (above) to see its stderr.
 
-The same server over HTTP (what a shared server runs, §5c):
+The same tools over HTTP or HTTPS, as a shared server runs them (§5c):
 
 ```bash
-SUMGREP_HTTP=127.0.0.1:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
-# [sumgrep] serving http://127.0.0.1:8000/mcp ...   Ctrl-C to quit
+cd ~/sumgrep && uv run sumgrep serve
+# [sumgrep] serving http://0.0.0.0:8000/mcp · config ... ·   Ctrl-C to quit
 ```
 
-`SUMGREP_HTTP` is `HOST:PORT`; unset, the server speaks stdio. Add
-`SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem`
-to serve HTTPS instead (both PEM files, the key without a password).
+Address and HTTPS come from `[server]` in `sumgrep.toml` (§6).
 
 ---
 
@@ -498,9 +496,11 @@ everyone's Claude Code connects to it:
 
 ```bash
 # on the server machine (Qdrant, Ollama + bge-m3, index loaded)
-SUMGREP_HTTP=0.0.0.0:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
-# HTTPS instead: also set SUMGREP_TLS_CERT=/path/to/cert.pem SUMGREP_TLS_KEY=/path/to/key.pem
+cd ~/sumgrep && uv run sumgrep serve
 ```
+
+HTTP on port 8000 by default. For HTTPS, set `https = true`, `tls_cert`
+and `tls_key` in `[server]` of `~/.sumgrep/sumgrep.toml` (§6).
 
 Then commit two files to the indexed repo, and teammates run nothing:
 
@@ -588,6 +588,12 @@ mode = "summary"          # summary | code | hybrid
 k = 10
 floor = 0.35
 code_weight = 1.0
+
+[server]                  # only for the shared team server: uv run sumgrep serve (§5c)
+address = "0.0.0.0:8000"  # HOST:PORT it listens on
+https = false             # true: https with the two files below
+tls_cert = ""             # PEM certificate (the full chain, if it came with one)
+tls_key = ""              # PEM key, no password
 
 [summarize]
 provider = "ollama"       # ollama | anthropic | bedrock

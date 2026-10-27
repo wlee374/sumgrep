@@ -588,5 +588,22 @@ def import_cmd(
     import_bundle(file, config, collection)
 
 
+# ---------------------------------------------------------------- shared server
+
+@app.command()
+def serve(config: Path | None = _CONFIG) -> None:
+    """Run the shared team server: search over HTTP or HTTPS for teammates'
+    Claude Code, as set in the server section of sumgrep.toml. Ctrl-C stops it."""
+    from .config import load_config
+    from .mcp_server import serve as serve_http
+
+    try:
+        cfg = load_config(config)
+    except FileNotFoundError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1)
+    serve_http(cfg)
+
+
 if __name__ == "__main__":
     app()
