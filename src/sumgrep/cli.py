@@ -124,6 +124,16 @@ def _report(st) -> None:
         typer.echo(f"  ! {e}")
 
 
+def _elapsed(t0: float) -> str:
+    """Time since t0 as '45s', '12m 05s' or '3h 07m' (full runs take hours)."""
+    s = int(time.time() - t0)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60:02d}s"
+    return f"{s // 3600}h {s % 3600 // 60:02d}m"
+
+
 @app.command()
 def summarize(
     repo: Path = _REPO,
@@ -218,9 +228,11 @@ def summarize(
                    f" · rough cost ≈ ${est:.2f}")
         return
 
+    t0 = time.time()
+
     def progress(done: int, total: int) -> None:
-        if done % 100 == 0 or done == total:
-            typer.echo(f"  {done}/{total} summarized")
+        if done % 10 == 0 or done == total:
+            typer.echo(f"  {done}/{total} summarized · {_elapsed(t0)}")
 
     try:
         st = summarize_chunks(chunks, summarizer, cache, conc,
@@ -228,6 +240,7 @@ def summarize(
     except KeyboardInterrupt:
         _stopped()
     _report(st)
+    typer.echo(f"done in {_elapsed(t0)}")
 
 
 @app.command()
