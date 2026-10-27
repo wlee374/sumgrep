@@ -1,6 +1,6 @@
 {
   "name": "sumgrep",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Semantic code search by meaning: every function gets an LLM-written summary; search_code returns pointers (function, repo-relative file, lines), never code. Needs local Qdrant (Docker), Ollama with bge-m3, and uv.",
   "author": { "name": "Wonjun Lee", "url": "https://github.com/wlee374" },
   "homepage": "https://github.com/wlee374/sumgrep",

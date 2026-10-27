@@ -26,7 +26,7 @@ Design and rationale: `docs/sumgrep-build-guide.md`.
 | uv | Python project runner | everything |
 | Docker + Qdrant | the vector database, port 6333 | everything |
 | Ollama + bge-m3 | embedding model, port 11434 | search and index |
-| Ollama + qwen3.8:27b-mlx (or Anthropic API) | writes the summaries | index only, when functions change |
+| Ollama + qwen3.5:9b (or Anthropic API) | writes the summaries | index only, when functions change |
 | Claude Code CLI | registers the MCP server | Claude Code integration |
 
 Tested on macOS Apple Silicon, 32 GB. Linux notes inline.
@@ -104,13 +104,18 @@ Skip this if you will only load an exported index and search. Searching
 never needs the summarizer. Indexing needs it for every new or changed
 function.
 
-Option A, local, free, slow (~40 s per function; needs ~20 GB RAM free):
+Option A, local and free, the default (~9 s per function on Apple
+Silicon, much slower without a GPU; ~8 GB RAM free):
 
 ```bash
-ollama pull qwen3.8:27b-mlx
+ollama pull qwen3.5:9b
 ```
 
-Option B, Anthropic API, fast, a few dollars per 4k functions:
+With 20+ GB free you can use `qwen3.8:27b` (~40 s per function), the
+model behind the README's results; set it as `[summarize].model` (§2).
+
+Option B, Anthropic API (Claude Haiku 5.5), fast, roughly $1-2 per 4k
+functions (estimate):
 
 ```bash
 echo 'export ANTHROPIC_API_KEY="sk-ant-api03-..."' >> ~/.zshrc && source ~/.zshrc
@@ -154,8 +159,8 @@ If you chose the Anthropic summarizer, also change `[summarize]`:
 
 ```toml
 provider = "anthropic"
-model = "claude-haiku-4-5"
-max_words = 120
+model = "claude-haiku-5-5"
+max_tokens = 4000          # it thinks before writing; thinking counts toward this
 ```
 
 **Check:**
@@ -216,8 +221,9 @@ uv run sumgrep chunk --repo $REPO --stats
 uv run sumgrep summarize --repo $REPO --sample 10
 #    Read the pairs. Mush gate at the end must say "ok" (median cosine < 0.75).
 
-# 3. Full run. Local 27B: ~40 s × functions (4k functions ≈ 2 days, resumable).
-#    Anthropic Haiku: ~20 min, a few dollars. Ctrl-C any time; rerun resumes.
+# 3. Full run. Default local model: ~9 s × functions on Apple Silicon
+#    (a 27B: ~40 s, 4k functions ≈ 2 days). Anthropic Haiku: ~20 min, ~$1-2
+#    (estimate). Ctrl-C any time; rerun resumes.
 uv run sumgrep index --repo $REPO
 ```
 
@@ -598,7 +604,7 @@ ollama list                       # models present
 | Claude never calls `search_code` | server not registered for this scope, or steering missing | `claude mcp list`; `/mcp` in session; §4.2 |
 | search results all look unrelated to each other | the concept probably isn't in the repo | the score can't tell you; read the top file to confirm |
 | summaries repeat themselves in loops | Qwen without penalties | keep `presence_penalty = 1.5`, `think = false` |
-| `index` is slow | it's the local 27B: ~40 s per changed function | let it run; or switch `[summarize]` to Anthropic |
+| `index` is slow | a local model: ~9 s per changed function with the default, ~40 s with a 27B, more without a GPU | let it run; or switch `[summarize]` to Anthropic |
 | shared server: `claude mcp list` shows `✘ Failed to connect` | server not running, wrong address, or this machine isn't on the server's network | on the server: `systemctl status sumgrep` (Linux) or the log (§7b); here: office network or VPN on? |
 | `SUMGREP_HTTP must be HOST:PORT` | malformed value | e.g. `0.0.0.0:8000` |
 | `address already in use` when the shared server starts | another program has the port | pick another port in `SUMGREP_HTTP`, and in the teammates' URL |

@@ -19,7 +19,7 @@ class SummarizeCfg:
     aws_region: str | None = None   # bedrock only; falls back to $AWS_REGION
     concurrency: int | None = None  # default: 8 for API providers, 2 for ollama
     # generation knobs — omitted = provider default
-    temperature: float | None = None
+    temperature: float | None = None # ollama only (Claude models reject it)
     top_p: float | None = None      # ollama only
     presence_penalty: float | None = None   # ollama only; Qwen recommends 1.5 (stops loops)
     repeat_penalty: float | None = None     # ollama only; Ollama default 1.1

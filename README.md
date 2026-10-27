@@ -22,10 +22,11 @@ only know what it does.
 - **Docker**, running Qdrant (the vector database) on port 6333.
 - **Ollama** with `bge-m3` (embeddings, ~1.2 GB) on port 11434.
 - **uv**, the Python project runner (it fetches Python 3.12 itself).
-- **A summarizer**, only for building the index: a local Ollama model
-  (free; ~40 s per function for a 27B model on an Apple Silicon Mac), or an
-  Anthropic API key (Haiku: ~20 min and a few dollars for 4,000
-  functions). Never Claude Code's login token.
+- **A summarizer**, only for building the index. Default: `qwen3.5:9b`
+  through Ollama (6.6 GB, ~8 GB of free RAM, any OS; ~9 s per function on
+  an Apple Silicon Mac, much slower without a GPU). Or Claude Haiku
+  5.5 with an Anthropic API key: faster, roughly $1-2 per 4,000 functions
+  (estimate). Never Claude Code's login token.
 
 On a team, one machine can run all of this as a shared server; teammates
 then need only Claude Code (§5c).
@@ -33,6 +34,40 @@ then need only Claude Code (§5c).
 Languages: Python, Go, TypeScript/TSX, JavaScript, C++. With a local
 summarizer nothing leaves your machine. Tested on macOS (Apple Silicon);
 Linux notes are in `SETUP.md`; Windows is untested.
+
+## Try it on sumgrep's own code
+
+Index sumgrep itself (~110 functions) with the default local model and ask
+it questions: about 17 minutes of indexing plus the downloads. You need
+Docker Desktop (running), Ollama and uv. No API key, and nothing leaves
+your machine.
+
+```bash
+docker run -d --name qdrant -p 6333:6333 -p 6334:6334 -v qdrant_storage:/qdrant/storage qdrant/qdrant
+ollama pull bge-m3 && ollama pull qwen3.5:9b           # 1.2 GB + 6.6 GB
+git clone https://github.com/wlee374/sumgrep.git ~/sumgrep && cd ~/sumgrep
+mkdir -p ~/.sumgrep && cp sumgrep.toml.example ~/.sumgrep/sumgrep.toml
+uv run sumgrep index --repo .
+```
+
+The index step took 17 minutes on an Apple Silicon Mac (~9 s per
+function); without a GPU expect much longer. It prints
+`repo config: NONE`: that's fine, sumgrep needs no excludes. Then search:
+
+```bash
+uv run sumgrep search --repo . "merge the ranked results of several searches into one list"
+uv run sumgrep search --repo . "cut off a model answer that starts repeating itself"
+```
+
+The first should point at `rrf` in `src/sumgrep/search.py`, the second at
+`trim_repetition` in `src/sumgrep/summarizer.py`. To see it from Claude
+Code, connect it (step 2 below), open a new session in `~/sumgrep` and ask
+"where do we merge results from the two searches?"
+
+When you later index your own repo and this trial is the only thing in the
+index, add `--recreate` to that first `index` to start clean. Otherwise
+sumgrep's functions stay in the index; results name their repo, and Claude
+is told to ignore repos it isn't working in.
 
 ## Get started
 
@@ -57,7 +92,9 @@ This file is the command reference. Design and phase plan:
 ## How well it works
 
 Measured on one Go codebase of ~4,600 functions with 55 labeled
-questions, comparing each question with the summaries (the default):
+questions, comparing each question with the summaries (the default mode).
+The summaries came from `qwen3.8:27b`; the smaller default `qwen3.5:9b`
+hasn't been measured this way yet.
 
 | Questions | found 1st | in top 5 | MRR@10 |
 |---|---|---|---|
@@ -132,7 +169,7 @@ uv run sumgrep index --repo $REPO
 ```
 
 Incremental. Only functions whose body changed are re-summarized
-(about 40 s each on a local 27B model). Unchanged functions, comment
+(~9 s each with the default local model). Unchanged functions, comment
 edits, and moved code cost nothing. A no-op run takes ~3 s.
 
 The last line tells you what happened:
@@ -391,7 +428,7 @@ SUMGREP_HTTP=127.0.0.1:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_ser
    ```bash
    uv run sumgrep chunk --repo /path/to/repo --stats          # sane function count?
    uv run sumgrep summarize --repo /path/to/repo --sample 10  # summaries look right?
-   uv run sumgrep index --repo /path/to/repo                  # full run: ~40 s per function on a local 27B
+   uv run sumgrep index --repo /path/to/repo                  # full run: ~9 s per function with the default model
    ```
 3. Nothing else to configure: the MCP server searches every indexed repo.
 
@@ -548,7 +585,7 @@ code_weight = 1.0
 
 [summarize]
 provider = "ollama"       # ollama | anthropic | bedrock
-model = "qwen3.8:27b-mlx"
+model = "qwen3.5:9b"      # with 20+ GB free: qwen3.8:27b, the model behind the results above
 max_words = 300
 num_ctx = 12000           # ollama: context window; must fit an 8k-char function
 think = false             # ollama: skip the reasoning pass
@@ -567,16 +604,18 @@ exclude = ["third_party/*"]          # glob patterns skipped when chunking
 ### Changing the summarizer model
 
 1. Edit `[summarize]`. Local: `ollama pull <model>` then set `model`.
-   Anthropic API: `provider = "anthropic"`, `model = "claude-haiku-4-5"`,
-   and `export ANTHROPIC_API_KEY=sk-ant-api...` in your shell. Never the
-   Claude Code login token.
+   Anthropic API: `provider = "anthropic"`, `model = "claude-haiku-5-5"`,
+   `max_tokens = 4000` (it thinks before writing, and thinking counts toward
+   the cap), and `export ANTHROPIC_API_KEY=sk-ant-api...` in your shell.
+   Never the Claude Code login token.
 2. Test on a sample before committing:
    `uv run sumgrep summarize --repo $REPO --sample 10`
    Read the pairs. The mush score at the end should be well under 0.75.
 3. `uv run sumgrep summarize --repo $REPO`. Summaries are cached per
-   model, so a new model re-summarizes everything: ~47 h for 4k functions
-   on a local 27B, ~20 min and a few dollars on Haiku. Resumable; search
-   keeps using the old summaries meanwhile.
+   model, so a new model re-summarizes everything. For 4k functions:
+   hours on a local model (~9 s each with the default, ~40 s with
+   `qwen3.8:27b`), or roughly 20 min and $1-2 on Haiku (estimate). Resumable;
+   search keeps using the old summaries meanwhile.
 4. `uv run sumgrep index --repo $REPO --recreate` (~13 min, no LLM calls:
    every summary is now a cache hit). A plain `index` is not enough: it
    skips every function whose code hasn't changed, so the old summaries

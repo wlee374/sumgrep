@@ -84,16 +84,15 @@ class _AnthropicLike:
         self.client = client
         self.model = cfg.model
         self.max_words = cfg.max_words
-        self.temperature = cfg.temperature
         self.max_tokens = cfg.max_tokens
 
     def complete(self, system: str, user: str) -> SummaryResult:
-        """One system+user turn -> text. Shared by summaries and HyDE rewrites."""
-        extra = {} if self.temperature is None else {"temperature": self.temperature}
+        """One system+user turn -> text. Shared by summaries and HyDE rewrites.
+        No `temperature`: current Claude models reject sampling parameters, and
+        `[summarize]` keeps one for Ollama."""
         r = self.client.messages.create(
             model=self.model, max_tokens=self.max_tokens, system=system,
             messages=[{"role": "user", "content": user}],
-            **extra,
         )
         text = "".join(b.text for b in r.content
                        if getattr(b, "type", "") == "text").strip()

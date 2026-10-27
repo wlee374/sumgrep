@@ -1,6 +1,6 @@
 [project]
 name = "sumgrep"
-version = "0.1.0"
+version = "0.1.1"
 description = "Semantic code search for Claude Code: functions indexed by LLM-written summaries; search returns pointers, never code."
 readme = "README.md"
 authors = [

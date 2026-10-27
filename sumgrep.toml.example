@@ -16,21 +16,30 @@ floor = 0.35          # drop hits whose best cosine is below this
 code_weight = 1.0     # hybrid only: scale of the code arm (summary arm = 1.0)
 
 [summarize]
-provider = "ollama"       # Option A: anthropic — key from env ANTHROPIC_API_KEY
-model = "qwen3.8:27b-mlx"   # Option B: provider = "ollama", model = "qwen3.5:9b"
+# Default: a local model that runs on any OS with ~8 GB of free RAM. No API
+# key, and your code never leaves the machine. First: ollama pull qwen3.5:9b
+provider = "ollama"
+model = "qwen3.5:9b"      # 6.6 GB. Less RAM: "qwen3.5:4b" (3.3 GB).
+                          # 20+ GB free: "qwen3.8:27b" (or "qwen3.8:27b-mlx" on
+                          # Apple Silicon), the model behind the README's results
 max_words = 300
-num_ctx = 12000       # room for instructions + an 8k-char chunk + output
-think = false
-temperature = 0.7
-top_p = 0.8
-keep_alive = "10m"
+num_ctx = 12000       # ollama: room for instructions + an 8k-char chunk + output
+think = false         # ollama: skip the reasoning pass
+temperature = 0.7     # ollama only
+top_p = 0.8           # ollama only
+keep_alive = "10m"    # ollama: keep the model loaded between calls
 max_tokens = 1500
-presence_penalty = 1.5   # Qwen's own setting against repetition loops
+presence_penalty = 1.5   # ollama: Qwen's own setting against repetition loops
 
+# Faster, needs an API key (export ANTHROPIC_API_KEY=sk-ant-api...; never
+# Claude Code's login token). Replace `provider`, `model` and `max_tokens`
+# above with these. Haiku 5.5 thinks before it writes, and thinking counts
+# toward max_tokens, so leave it room. The ollama-only keys are ignored.
 #provider = "anthropic"
-#model = "claude-haiku-4-5"
-#max_words = 120
+#model = "claude-haiku-5-5"
+#max_tokens = 4000
 #
+# Or through Amazon Bedrock (AWS credentials from the usual AWS chain):
 #provider = "bedrock"
 #model = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 #aws_region = "us-west-2"
