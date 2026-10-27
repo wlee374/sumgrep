@@ -27,6 +27,9 @@ only know what it does.
   Anthropic API key (Haiku: ~20 min and a few dollars for 4,000
   functions). Never Claude Code's login token.
 
+On a team, one machine can run all of this as a shared server; teammates
+then need only Claude Code (§5c).
+
 Languages: Python, Go, TypeScript/TSX, JavaScript, C++. With a local
 summarizer nothing leaves your machine. Tested on macOS (Apple Silicon);
 Linux notes are in `SETUP.md`; Windows is untested.
@@ -44,7 +47,8 @@ Linux notes are in `SETUP.md`; Windows is untested.
    - or register the server from your clone (§5b).
 
    Not both, or Claude sees every tool twice.
-3. Got a `.sumgrep` file from a teammate? **`QUICKSTART.md`**: three
+3. Got a `.sumgrep` file or a server address from a teammate?
+   **`QUICKSTART.md`**: a server address is one command; a file is three
    installs and one command, macOS or Windows.
 
 This file is the command reference. Design and phase plan:
@@ -321,6 +325,15 @@ Its tools are named `mcp__sumgrep__search_code` and
 `mcp__sumgrep__index_status`. Check it's registered: `claude mcp list`,
 or `/mcp` inside a session.
 
+**Or connect to a shared server** your team runs (§5c), instead of
+either of the above. Nothing else to install:
+
+```bash
+claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
+```
+
+Same tool names as the clone registration.
+
 **What it returns.** Pointers, exactly as stored in the index: function
 name, file path relative to the repo root, line range, kind, e.g.
 `rrf  src/sumgrep/search.py:L83-114  [function]`. The server never
@@ -357,6 +370,15 @@ uv run --project ~/sumgrep python -m sumgrep.mcp_server
 
 Logs from a running server: `~/.claude/` debug logs, or start the server
 from a terminal (above) to see its stderr.
+
+The same server over HTTP (what a shared server runs, §5c):
+
+```bash
+SUMGREP_HTTP=127.0.0.1:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
+# [sumgrep] serving http://127.0.0.1:8000/mcp ...   Ctrl-C to quit
+```
+
+`SUMGREP_HTTP` is `HOST:PORT`; unset, the server speaks stdio.
 
 ---
 
@@ -426,6 +448,31 @@ Without the snapshot, the summary cache alone is enough: the first
 `index` on the new machine re-embeds everything (~13 min for 4k
 functions) but makes no LLM calls.
 
+### One shared server for the team
+
+Instead of every teammate running Docker, Ollama and an imported index,
+one machine runs them plus the sumgrep server over HTTP, and everyone
+connects Claude Code to it:
+
+```bash
+# on the server machine (Qdrant, Ollama + bge-m3, index loaded)
+SUMGREP_HTTP=0.0.0.0:8000 uv run --project ~/sumgrep python -m sumgrep.mcp_server
+
+# each teammate, once
+claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
+```
+
+Or commit a `.mcp.json` with `{"mcpServers": {"sumgrep": {"type":
+"http", "url": "http://SERVER:8000/mcp"}}}` to the indexed repo; Claude
+Code asks each teammate once whether to use it.
+
+There is **no login**: anyone who can reach the port can search, and the
+index holds every function name, path and summary. Run it only on the
+office network or a VPN. Keep Qdrant and Ollama unreachable from the
+network. You re-index from your own machine straight into the server's
+Qdrant through an SSH tunnel. Full runbook (keeping it running on
+Linux/macOS, the tunnel, checks): `SETUP.md` §7b.
+
 ### Make Claude agents use it
 
 **Every interactive session** already has it once it's connected (§5b):
@@ -464,8 +511,9 @@ opts = ClaudeAgentOptions(
 
 **Project scope for a team**: commit a `.mcp.json` in the target repo
 with the same stdio block, or have everyone install the plugin. Each
-teammate still needs Qdrant, Ollama, and an index on their own machine
-(or point `[qdrant].url` at a shared Qdrant).
+teammate then still needs Qdrant, Ollama, and an index on their own
+machine. With a shared server, the `.mcp.json` holds the `http` entry
+above and teammates need nothing else.
 
 ---
 
@@ -569,6 +617,7 @@ Summaries are reused from cache; only the embedding step reruns (~13 min).
 | index: `collection has 1024-dim vectors but ... produces N` | embedding model changed | `index --recreate` |
 | `repo config: NONE` in index output | `--repo` path doesn't match a `[[repos]]` entry | fix the path in sumgrep.toml; excludes won't apply otherwise |
 | summaries loop / repeat themselves | Qwen without penalty | keep `presence_penalty = 1.5`, `think = false` |
+| shared server: `claude mcp list` shows `✘ Failed to connect` | server down, wrong address, or not on its network | office network / VPN on? server running? (`SETUP.md` §7b) |
 
 ---
 

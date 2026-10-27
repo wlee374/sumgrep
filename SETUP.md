@@ -31,6 +31,9 @@ Design and rationale: `docs/sumgrep-build-guide.md`.
 
 Tested on macOS Apple Silicon, 32 GB. Linux notes inline.
 
+For a team, one machine can run all of this and serve everyone over the
+network; teammates then need only Claude Code (§7b).
+
 ---
 
 ## 1. Prerequisites
@@ -360,6 +363,193 @@ Copy the `.sumgrep` file over, then on the target follow §1, §2, §3 Path A
 
 ---
 
+## 7b. One shared server for a team
+
+One machine runs Qdrant, Ollama and the sumgrep server over HTTP.
+Teammates connect Claude Code to it with one command and install nothing
+else. Everyone searches the same index.
+
+There is **no login**: anyone who can reach the server's port can search.
+Run it only where just your team can reach it (office network or VPN).
+The index holds no source code, but it does hold every function name,
+file path and summary.
+
+### On the server machine (once)
+
+1. Follow §1.1–1.3 and §2: uv, Docker + Qdrant, Ollama + bge-m3, the
+   sumgrep folder. No summarizer, no `[[repos]]` entry and no GPU: the
+   server never indexes, it only embeds the question. One change in §1.2:
+   publish Qdrant on this machine only, so nobody on the network can
+   reach it (it has no login either, and anyone reaching it could delete
+   the index; on Linux, Docker's published ports bypass `ufw`):
+
+   ```bash
+   docker run -d --name qdrant \
+     -p 127.0.0.1:6333:6333 -p 127.0.0.1:6334:6334 \
+     -v qdrant_storage:/qdrant/storage \
+     qdrant/qdrant
+   docker update --restart unless-stopped qdrant
+   ```
+
+   Ollama listens on this machine only by default; leave it that way.
+
+2. Load the index: copy a `.sumgrep` export over and run §3 Path A. Say
+   no when it offers `claude mcp add`.
+
+3. Start the server:
+
+   ```bash
+   cd ~/sumgrep
+   SUMGREP_HTTP=0.0.0.0:8000 uv run python -m sumgrep.mcp_server
+   # [sumgrep] serving http://0.0.0.0:8000/mcp (no auth: private network only)
+   ```
+
+   `SUMGREP_HTTP` is `HOST:PORT`. `0.0.0.0` listens on every network the
+   machine is on; put one of its addresses there to listen on that one
+   only. Without `SUMGREP_HTTP` the server speaks stdio as in §4.1.
+
+4. **Check** from another machine on the same network:
+
+   ```bash
+   claude mcp add --transport http sumgrep-test http://SERVER:8000/mcp
+   claude mcp list
+   # sumgrep-test: http://SERVER:8000/mcp (HTTP) - ✔ Connected
+   claude mcp remove sumgrep-test -s local
+   ```
+
+5. Keep it running (stop the one from step 3 first). The path to `uv` is
+   what `which uv` prints.
+
+   **Linux**, `/etc/systemd/system/sumgrep.service`:
+
+   ```ini
+   [Unit]
+   Description=sumgrep shared search server
+   After=network-online.target docker.service ollama.service
+   Wants=network-online.target
+
+   [Service]
+   User=YOU
+   Environment=SUMGREP_HTTP=0.0.0.0:8000
+   ExecStart=/home/YOU/.local/bin/uv run --project /home/YOU/sumgrep python -m sumgrep.mcp_server
+   Restart=on-failure
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl enable --now sumgrep
+   journalctl -u sumgrep -f            # its log
+   ```
+
+   **macOS**, `~/Library/LaunchAgents/com.sumgrep.server.plist` (runs
+   while you are logged in):
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+     <key>Label</key>
+     <string>com.sumgrep.server</string>
+     <key>ProgramArguments</key>
+     <array>
+       <string>/Users/YOU/.local/bin/uv</string>
+       <string>run</string>
+       <string>--project</string>
+       <string>/Users/YOU/sumgrep</string>
+       <string>python</string>
+       <string>-m</string>
+       <string>sumgrep.mcp_server</string>
+     </array>
+     <key>EnvironmentVariables</key>
+     <dict>
+       <key>SUMGREP_HTTP</key>
+       <string>0.0.0.0:8000</string>
+     </dict>
+     <key>RunAtLoad</key>
+     <true/>
+     <key>KeepAlive</key>
+     <true/>
+     <key>StandardErrorPath</key>
+     <string>/Users/YOU/.sumgrep/server.log</string>
+   </dict>
+   </plist>
+   ```
+
+   ```bash
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sumgrep.server.plist
+   tail -f ~/.sumgrep/server.log       # its log
+   ```
+
+   If macOS asks whether Python may accept incoming connections, allow it.
+
+### Teammates
+
+Each runs one command, on the office network or VPN:
+
+```bash
+claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
+```
+
+Or nobody runs anything: commit this `.mcp.json` to the root of the
+indexed repo, and Claude Code asks each teammate once, in that repo,
+whether to use it:
+
+```json
+{
+  "mcpServers": {
+    "sumgrep": { "type": "http", "url": "http://SERVER:8000/mcp" }
+  }
+}
+```
+
+Anyone who set sumgrep up locally before removes that first:
+`claude mcp remove --scope user sumgrep` (after `import` or §4.1 Option
+B; otherwise the add fails on the name) or `claude plugin uninstall
+sumgrep@sumgrep` (otherwise every tool shows up twice). Teammates
+need no Docker, Ollama, uv, sumgrep folder or `.sumgrep` file;
+`QUICKSTART.md` has the plain-words version.
+
+### Updating the shared index
+
+Index where the summarizer and the summary cache are (your machine),
+straight into the server's Qdrant through an SSH tunnel. Both machines
+must use the same embedding model (bge-m3).
+
+```bash
+ssh -N -L 16333:localhost:6333 you@SERVER    # leave it running in its own terminal
+```
+
+In a second terminal, once: a copy of your settings that points at the
+tunnel, so your own settings stay on your local Qdrant. Copy the file you
+use (`~/.sumgrep/sumgrep.toml`, or `sumgrep.toml` in the sumgrep folder
+if you keep one there):
+
+```bash
+cp ~/.sumgrep/sumgrep.toml ~/.sumgrep/shared.toml
+# edit ~/.sumgrep/shared.toml:  [qdrant] url = "http://localhost:16333"
+```
+
+Then, after each round of changes:
+
+```bash
+cd ~/sumgrep
+uv run sumgrep index --repo $REPO --config ~/.sumgrep/shared.toml
+uv run sumgrep meta  --repo $REPO --config ~/.sumgrep/shared.toml   # the server's index commit
+```
+
+It is incremental, as in §5. Teammates get it on their next search; the
+server needs no restart. Without SSH: `export` here, copy the file,
+`import` on the server (replaces the whole index).
+
+Everyone shares the index at one commit. That is the same staleness as
+§5: the server's instructions tell Claude to trust the file, and
+`index_status` shows the commit.
+
+---
+
 ## 8. Changing models (read before you do it)
 
 | Change | Effect | Command |
@@ -397,6 +587,9 @@ ollama list                       # models present
 | search results all look unrelated to each other | the concept probably isn't in the repo | the score can't tell you; read the top file to confirm |
 | summaries repeat themselves in loops | Qwen without penalties | keep `presence_penalty = 1.5`, `think = false` |
 | `index` is slow | it's the local 27B: ~40 s per changed function | let it run; or switch `[summarize]` to Anthropic |
+| shared server: `claude mcp list` shows `✘ Failed to connect` | server not running, wrong address, or this machine isn't on the server's network | on the server: `systemctl status sumgrep` (Linux) or the log (§7b); here: office network or VPN on? |
+| `SUMGREP_HTTP must be HOST:PORT` | malformed value | e.g. `0.0.0.0:8000` |
+| `address already in use` when the shared server starts | another program has the port | pick another port in `SUMGREP_HTTP`, and in the teammates' URL |
 
 ---
 
@@ -404,6 +597,8 @@ ollama list                       # models present
 
 ```bash
 claude mcp remove --scope user sumgrep        # or: claude plugin uninstall sumgrep@sumgrep
+# shared server (§7b): sudo systemctl disable --now sumgrep
+#   or on macOS: launchctl bootout gui/$(id -u)/com.sumgrep.server
 docker rm -f qdrant && docker volume rm qdrant_storage      # deletes the index
 rm -rf ~/sumgrep ~/.sumgrep                                 # code + summary cache
 # remove the sumgrep section from ~/.claude/CLAUDE.md

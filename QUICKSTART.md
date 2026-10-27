@@ -1,9 +1,34 @@
 # sumgrep quick start
 
-You got a `.sumgrep` file. This page sets up your computer so Claude Code
-can search that code **by meaning** ("where do we handle login?").
-It takes about 15 minutes, once. Tested on macOS; the Windows steps are
-included but not tested yet, so tell whoever sent you the file if one fails.
+This page sets up Claude Code so it can search your team's code **by
+meaning** ("where do we handle login?").
+
+- **You got a server address** (like `http://10.0.0.5:8000/mcp`): your
+  team runs one shared sumgrep. You need only Claude Code. Do
+  **Shared server** just below, then step 4.
+- **You got a `.sumgrep` file:** do steps 1–4. It takes about 15
+  minutes, once. Tested on macOS; the Windows steps are included but not
+  tested yet, so tell whoever sent you the file if one fails.
+
+---
+
+## Shared server (one command)
+
+Be on the office network or VPN, where the server is. In Terminal
+(macOS) or PowerShell (Windows), paste this with your address at the end:
+
+```bash
+claude mcp add --scope user --transport http sumgrep http://10.0.0.5:8000/mcp
+```
+
+Then go to step 4. Nothing else to install.
+
+If it says `already exists`, sumgrep was set up on this computer before.
+Run `claude mcp remove --scope user sumgrep`, then the command again.
+
+If Claude Code asks whether to use the `sumgrep` server from your
+project's `.mcp.json`, say yes: your team set it up there for you, and
+you don't need the command at all.
 
 ---
 
@@ -89,6 +114,7 @@ Claude looks it up with sumgrep, then opens the file.
 | `STOPPED: Docker Desktop is not running` | Open Docker Desktop, wait until it says *Engine running*. |
 | `STOPPED: Ollama is not running` | Open the Ollama app. |
 | Claude never uses sumgrep | Start a **new** session. Type `/mcp` in Claude Code: `sumgrep` should be listed. |
+| Shared server: `/mcp` says sumgrep failed | Turn on the VPN (or join the office network), then start a new session. Still failing: ask whoever runs the server. |
 
 ---
 
@@ -105,3 +131,6 @@ access, also send the code as a zip:
 ```bash
 git -C ~/sumgrep archive --format=zip --prefix=sumgrep/ -o ~/Desktop/sumgrep-code.zip HEAD
 ```
+
+Or run one shared server for everyone (`SETUP.md` §7b) and send people
+only its address.
