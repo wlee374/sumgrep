@@ -5,8 +5,8 @@ meaning** ("where do we handle login?").
 
 - **You got a server address** (like `http://10.0.0.5:8000/mcp`): your
   team runs one shared sumgrep. You need only Claude Code. Do
-  **Shared server** just below, then step 4.
-- **You got a `.sumgrep` file:** do steps 1–4. It takes about 15
+  **Shared server** just below, then steps 4 and 5.
+- **You got a `.sumgrep` file:** do steps 1–5. It takes about 15
   minutes, once. Tested on macOS; the Windows steps are included but not
   tested yet, so tell whoever sent you the file if one fails.
 
@@ -84,13 +84,52 @@ uv run sumgrep import /path/to/sumgrep-index-DATE.sumgrep
 
 It checks your computer in four steps. When it asks a question, press
 **Enter** to say yes. It may set up the database, download a 1.2 GB model,
-and connect itself to Claude Code. The first run takes a few minutes.
-It ends with `Done.`
+connect itself to Claude Code, and add the note from step 4 for you. The
+first run takes a few minutes. It ends with `Done.`
 
 If it says `STOPPED:`, do the one thing it tells you, then run the same
 command again.
 
-## 4. Use it
+## 4. Tell Claude when to use it (once)
+
+Being connected isn't enough: Claude keeps using its usual text search
+unless a note tells it to try sumgrep first. **Skip this step** if:
+
+- you did step 3 and pressed Enter when it offered to add the note, or
+- your project's `CLAUDE.md` file already has a `## sumgrep` section
+  (your team may have added it there for everyone).
+
+On **macOS**, in Terminal, paste all of it:
+
+```bash
+mkdir -p ~/.claude && cat >> ~/.claude/CLAUDE.md <<'EOF'
+
+## sumgrep
+Semantic code search by meaning. For "where is the code that does X" use
+sumgrep search_code first, then Read/Grep the returned file+lines for ground
+truth. For exact identifiers, strings, or error messages, use Grep directly.
+Check index_status if results look off.
+EOF
+```
+
+On **Windows**, in PowerShell, paste all of it:
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.claude" | Out-Null
+Add-Content "$HOME\.claude\CLAUDE.md" @'
+
+## sumgrep
+Semantic code search by meaning. For "where is the code that does X" use
+sumgrep search_code first, then Read/Grep the returned file+lines for ground
+truth. For exact identifiers, strings, or error messages, use Grep directly.
+Check index_status if results look off.
+'@
+```
+
+This adds the note to your personal Claude Code instructions file. Do it
+once; running it again adds a second copy.
+
+## 5. Use it
 
 Open a **new** Claude Code session in your project and ask a question in
 your own words, for example *"where is the code that refreshes the token?"*
@@ -113,7 +152,7 @@ Claude looks it up with sumgrep, then opens the file.
 | `command not found: uv` / `'uv' is not recognized` | Close and reopen the terminal (after installing uv). |
 | `STOPPED: Docker Desktop is not running` | Open Docker Desktop, wait until it says *Engine running*. |
 | `STOPPED: Ollama is not running` | Open the Ollama app. |
-| Claude never uses sumgrep | Start a **new** session. Type `/mcp` in Claude Code: `sumgrep` should be listed. |
+| Claude never uses sumgrep | Start a **new** session. Type `/mcp` in Claude Code: `sumgrep` should be listed. Then check step 4 is done. |
 | Shared server: `/mcp` says sumgrep failed | Turn on the VPN (or join the office network), then start a new session. Still failing: ask whoever runs the server. |
 
 ---

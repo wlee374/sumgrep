@@ -430,7 +430,9 @@ uv run sumgrep import /path/to/sumgrep-index-DATE.sumgrep
    installs the summary cache only if this machine has none.
 3. **Test-searches** to prove Qdrant + Ollama + the index work together.
 4. **Connects** Claude Code (`claude mcp add`, if not already done). Say
-   no if you use the plugin.
+   no if you use the plugin. Then offers to append the steering paragraph
+   (`SETUP.md` §4.2) to `~/.claude/CLAUDE.md`; skipped if that file
+   already has a `## sumgrep` section.
 
 An older `.snapshot` from before 2026-10-12 still imports (no cache in
 it). For teammates without git, send the code as a zip:
@@ -464,7 +466,9 @@ claude mcp add --scope user --transport http sumgrep http://SERVER:8000/mcp
 
 Or commit a `.mcp.json` with `{"mcpServers": {"sumgrep": {"type":
 "http", "url": "http://SERVER:8000/mcp"}}}` to the indexed repo; Claude
-Code asks each teammate once whether to use it.
+Code asks each teammate once whether to use it. Commit the steering
+paragraph (`SETUP.md` §4.2) in that repo's `CLAUDE.md` too: without it,
+agents mostly keep using Grep.
 
 There is **no login**: anyone who can reach the port can search, and the
 index holds every function name, path and summary. Run it only on the

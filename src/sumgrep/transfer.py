@@ -3,8 +3,9 @@
 
 `sumgrep export` writes ONE .sumgrep file; `sumgrep import FILE` sets up the
 receiving computer from it: checks Qdrant (Docker) and Ollama, offers to fix
-what's missing, loads the index, runs a test search, connects Claude Code.
-It asks before running anything on the machine.
+what's missing, loads the index, runs a test search, connects Claude Code and
+adds the "when to use sumgrep" note to ~/.claude/CLAUDE.md. It asks before
+running or writing anything on the machine.
 
 A .sumgrep file is a zip with two entries:
   index.snapshot     Qdrant snapshot of the whole collection (all repos)
@@ -36,6 +37,16 @@ SNAPSHOT, CACHE = "index.snapshot", "summaries.sqlite"
 QDRANT_RUN = ["run", "-d", "--name", "qdrant", "--restart", "unless-stopped",
               "-p", "6333:6333", "-p", "6334:6334",
               "-v", "qdrant_storage:/qdrant/storage", "qdrant/qdrant"]
+# Says only WHEN to use sumgrep (SETUP.md §4.2), so it never goes stale; how
+# to use it lives in the server's instructions. Connected without this,
+# agents mostly keep using Grep.
+STEERING = """\
+## sumgrep
+Semantic code search by meaning. For "where is the code that does X" use
+sumgrep search_code first, then Read/Grep the returned file+lines for ground
+truth. For exact identifiers, strings, or error messages, use Grep directly.
+Check index_status if results look off.
+"""
 
 
 def _say(msg: str = "") -> None:
@@ -270,6 +281,23 @@ def _connect_claude() -> None:
     _say("  connected")
 
 
+def _steer_claude() -> None:
+    """Append STEERING to ~/.claude/CLAUDE.md unless it has a ## sumgrep section."""
+    memory = Path.home() / ".claude" / "CLAUDE.md"
+    text = memory.read_text(encoding="utf-8", errors="replace") if memory.is_file() else ""
+    if any(line.strip().lower() == "## sumgrep" for line in text.splitlines()):
+        _say("  ~/.claude/CLAUDE.md already tells Claude when to use sumgrep")
+        return
+    if not _ask("Add a short note to ~/.claude/CLAUDE.md telling Claude when to use sumgrep?"):
+        _say("  Skipped. QUICKSTART.md step 4 shows how to add it later.")
+        return
+    gap = "" if not text or text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
+    memory.parent.mkdir(parents=True, exist_ok=True)
+    with memory.open("a", encoding="utf-8") as f:
+        f.write(gap + STEERING)
+    _say("  added the note")
+
+
 def import_bundle(file: Path, config: Path | None, collection: str | None) -> None:
     from qdrant_client import QdrantClient
 
@@ -291,6 +319,7 @@ def import_bundle(file: Path, config: Path | None, collection: str | None) -> No
 
     _say("Step 4 of 4: connecting to Claude Code")
     _connect_claude()
+    _steer_claude()
 
     _say("\nDone. This computer can now search:")
     for m in metas:

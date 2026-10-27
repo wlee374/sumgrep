@@ -190,7 +190,8 @@ uv run sumgrep import /path/to/sumgrep-index-DATE.sumgrep
 what's missing), loads the index, installs the summary cache if this
 machine has none, creates `~/.sumgrep/sumgrep.toml` if there is no
 settings file, test-searches, and
-offers to run `claude mcp add` (so §4.1 is done if you accept). Teammates
+offers to run `claude mcp add` and to append the §4.2 paragraph to
+`~/.claude/CLAUDE.md` (so §4.1 and §4.2 are done if you accept). Teammates
 who only search can follow `QUICKSTART.md` instead of this file.
 
 The checkout can live at **any path** on this machine: search results are
@@ -278,7 +279,9 @@ live in `mcp_server.py` and update with the code (`git pull`, or
 `claude plugin update` for the plugin), so you never edit
 them by hand.
 
-Once per machine, add this to `~/.claude/CLAUDE.md`. It only says *when*
+Once per machine, add this to `~/.claude/CLAUDE.md` (`import` offers to
+do it for you; keep the text in sync with `STEERING` in
+`src/sumgrep/transfer.py`). It only says *when*
 to reach for sumgrep, so it never needs updating:
 
 ```markdown
@@ -504,6 +507,15 @@ whether to use it:
   }
 }
 ```
+
+Commit the §4.2 paragraph next to it, in the repo's `CLAUDE.md` (at the
+repo root; create it if there is none). A connected server alone rarely
+gets used: Claude Code follows `CLAUDE.md` as instructions and treats the
+server's own text as background. With both files in the repo, everyone
+who opens it gets the server and the note to use it, with no setup.
+Teammates who connect another way (the command above, or `import`) get
+the note too, and can skip QUICKSTART step 4. It only says *when* to use
+sumgrep, so it never needs updating.
 
 Anyone who set sumgrep up locally before removes that first:
 `claude mcp remove --scope user sumgrep` (after `import` or §4.1 Option
