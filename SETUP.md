@@ -271,11 +271,15 @@ claude mcp list
 # sumgrep: uv run --project ... - ✔ Connected
 ```
 
-Either way, every project on this machine gets it. The server
-searches every indexed repo (agents can pass `repo="name"` to narrow) and
-returns paths relative to the repo root, so nothing is per-project. In a
-project that isn't indexed, the results belong to other repos; the
-server's instructions tell the agent to ignore them and use Grep.
+Either way, every project on this machine gets it. The server returns
+paths relative to the repo root, so nothing is per-project. The agent
+says which repo it is working in: `repo=` with its checkout's git remote
+(`git remote get-url origin`), which `index` saved for each repo, or the
+repo's name. That works on every machine whatever the folder is called.
+With more than one repo indexed, sumgrep won't search without it, so
+another repo's functions can't fill the results. In a project that isn't
+indexed, its remote matches nothing and sumgrep says so; the server's
+instructions tell the agent to use Grep there.
 
 ### 4.2 Tell Claude when to use it
 
@@ -547,8 +551,9 @@ A search-log line (one result shown; real ones have up to `k`):
 ```
 
 `time` is UTC. `client` is the address of the machine that asked. `k`
-and `mode` are what was used, after defaults; `repo` is `null` when all
-repos were searched. `commits` is each repo's indexed commit, and `cos`
+and `mode` are what was used, after defaults; `repo` is what the agent
+passed (`null`: nothing, which works only with one repo indexed).
+`commits` is the repo searched and its indexed commit, and `cos`
 is how similar a result was. A search that couldn't run has `"error"`
 (the message the agent got) instead of `hits`; one that found nothing
 above the floor has `"hits": []`.
@@ -628,7 +633,9 @@ uv run sumgrep meta  --repo $REPO --config ~/.sumgrep/shared.toml   # the server
 ```
 
 It is incremental, as in §5. Teammates get it on their next search; the
-server needs no restart. Without SSH: `export` here, copy the file,
+server needs no restart. Each run also saves the repo's git remote,
+which agents use to say which repo they are in (`index_status` shows
+it). Without SSH: `export` here, copy the file,
 `import` on the server (replaces the whole index).
 
 Everyone shares the index at one commit. That is the same staleness as
@@ -666,7 +673,9 @@ ollama list                       # models present
 | `Connection refused` :11434 | Ollama not running | `brew services start ollama` or open the app |
 | `model 'bge-m3' not found` | not pulled on this machine | `ollama pull bge-m3` |
 | `no sumgrep.toml found` | config missing | in `~/sumgrep`: `mkdir -p ~/.sumgrep && cp sumgrep.toml.example ~/.sumgrep/sumgrep.toml` |
-| `repo 'x' is not indexed` | `repo=` names a repo that was never indexed | the reply lists indexed names; or run `index` |
+| `repo 'x' is not indexed` | `repo=` names a repo that was never indexed, or a remote other than the one `index` saved | the reply lists the indexed repos and their remotes; or run `index` |
+| `Not searched: N repos are indexed` | the agent left out `repo=` and more than one repo is indexed | nothing to fix: the agent asks again with its repo |
+| `index_status` / `meta` shows `remote  -` | the repo was indexed before sumgrep saved remotes, or it has no `origin` | run `index` on it once more (seconds, no LLM calls); until then it matches by name only |
 | `repo config: NONE` during index | `--repo` path ≠ `[[repos]].path` | fix the path; excludes are ignored otherwise |
 | `collection has 1024-dim vectors but ... produces N` | embedding model changed | `index --recreate` |
 | `0 of 1 chunks have a cached summary` | function edited since last index | run `index` |

@@ -11,7 +11,12 @@ and never prints absolute paths, so an index built on one machine works
 unchanged on any other, wherever the checkout lives. The agent opens the
 file in its own checkout (or greps the function name).
 
-Which repos: all indexed repos, unless `repo=` names one.
+Which repo: the agent says, with repo= — its checkout's git remote (any
+form; matched against the remote saved at index time) or the repo's name.
+The server can't tell on its own: nothing tells it where the agent works.
+With more than one repo indexed, search_code refuses without repo=, so
+another repo's functions never fill the results; with one, it may be left
+out.
 
 Which config: $SUMGREP_CONFIG if set, else this project's sumgrep.toml,
 else the usual lookup (./sumgrep.toml, ~/.sumgrep/sumgrep.toml). Installed
@@ -62,10 +67,13 @@ mcp = MCPServer(
         "for exact identifiers, strings, or error messages use Grep instead. "
         "Results are pointers: function name + file path relative to the repo "
         "root — open that file in your checkout, or grep the function name. "
-        "It searches every indexed repo (repo='name' narrows); if you are not "
-        "working in one of them (index_status lists them), ignore its results "
-        "and use Grep. The index is a snapshot at the commit index_status "
-        "shows: line numbers may have drifted and newer code is missing — "
+        "Always pass repo= with the repo you are working in: the output of "
+        "`git remote get-url origin` in your project (run it once; https or "
+        "ssh form both work), or that repo's name from index_status. With "
+        "more than one repo indexed, search_code refuses without it. If your "
+        "project is not one of the indexed repos (index_status lists them), "
+        "don't use sumgrep; use Grep. The index is a snapshot at the commit "
+        "index_status shows: line numbers may have drifted and newer code is missing — "
         "trust the file, grep if absent. Never try to index; re-indexing is a "
         "manual step a human runs."
     ),
@@ -148,12 +156,41 @@ def _metas(cfg, client, repo: str | None) -> tuple[list[dict], str | None]:
         return [], "nothing is indexed yet"
     if repo is None:
         return metas, None
-    name = Path(repo.rstrip("/")).name          # tolerate a path: use its folder name
-    picked = [m for m in metas if m.get("repo") == name]
+    picked = _pick(metas, repo)
     if not picked:
-        return [], (f"repo {repo!r} is not indexed. Indexed: "
-                    f"{', '.join(m.get('repo', '?') for m in metas)}")
+        return [], f"repo {_shown(repo)!r} is not indexed. Indexed: {_indexed(metas)}"
     return picked, None
+
+
+def _shown(repo: str | None) -> str | None:
+    """repo= as logged and echoed back: a remote without its user name or token."""
+    from .indexer import normalize_remote
+
+    return repo and (normalize_remote(repo) or repo)
+
+
+def _pick(metas: list[dict], repo: str) -> list[dict]:
+    """The indexed repo(s) `repo` means: a git remote in any form, matched
+    against the remote saved at index time, or a repo name (a path counts by
+    its last folder). A remote never matches a repo indexed with a different
+    remote, so an unrelated repo that only shares the name is not picked; a
+    repo indexed before remotes were saved is matched by name."""
+    from .indexer import normalize_remote
+
+    remote = normalize_remote(repo)
+    key = remote or repo.strip().lower().removesuffix(".git").strip("/")  # host/org/repo as listed
+    by_remote = [m for m in metas if m.get("remote") and m["remote"] == key]
+    if by_remote:
+        return by_remote
+    name = Path(repo.strip().replace("\\", "/").rstrip("/")).name.removesuffix(".git")
+    return [m for m in metas if m.get("repo") == name
+            and not (remote and m.get("remote"))]
+
+
+def _indexed(metas: list[dict]) -> str:
+    """'name (remote), ...' — what an agent can pass as repo=."""
+    return ", ".join(f"{m.get('repo', '?')} ({m['remote']})" if m.get("remote")
+                     else m.get("repo", "?") for m in metas)
 
 
 # ---------------------------------------------------------------- tools
@@ -169,7 +206,10 @@ def search_code(query: str, k: int | None = None, mode: str | None = None,
     Do NOT use for literal identifiers, exact strings, or error messages
     — use Grep for those.
 
-    Searches every indexed repo; pass repo="name" to search only one.
+    repo: the repo you are working in — the output of `git remote get-url
+    origin` in your project (https or ssh form), or its name from
+    index_status (a path counts by its last folder). Always pass it; with
+    more than one repo indexed it is required. Only that repo is searched.
 
     Returns up to k pointers: function name, file path relative to the
     repo root, line range, kind, and the first sentence of an LLM-written
@@ -183,7 +223,7 @@ def search_code(query: str, k: int | None = None, mode: str | None = None,
     mode: "summary" (default, compares the query to each function's
     summary), "code" (to the raw source), or "hybrid" (both, fused).
     """
-    rec: dict = {"query": query, "k": k, "mode": mode, "repo": repo}
+    rec: dict = {"query": query, "k": k, "mode": mode, "repo": _shown(repo)}
     t0 = time.monotonic()
     out = _search_code(query, k, mode, repo, rec)
     rec["ms"] = round((time.monotonic() - t0) * 1000)
@@ -214,6 +254,10 @@ def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
         return f"cannot reach the index: {type(e).__name__}: {e}"
     if err:
         return err
+    if repo is None and len(metas) > 1:
+        return (f"Not searched: {len(metas)} repos are indexed: {_indexed(metas)}. "
+                "Pass repo= with the one you are working in: the output of "
+                "`git remote get-url origin` in your project, or its name above.")
 
     names = [m["repo"] for m in metas]
     rec["commits"] = {m["repo"]: m.get("git_commit", "")[:10] for m in metas}
@@ -260,6 +304,7 @@ def index_status(repo: str | None = None) -> str:
     for m in metas:
         out += [
             f"repo            {m.get('repo')}",
+            f"remote          {m.get('remote') or '-'}",
             f"functions       {m.get('chunk_count')}",
             f"indexed commit  {m.get('git_commit', '')[:10]}",
             f"indexed at      {m.get('indexed_at')}",

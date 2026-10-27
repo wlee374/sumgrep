@@ -6,10 +6,12 @@ For each function in the repo:
   fingerprint unchanged, lines moved      -> cheap payload update (no LLM, no embed)
   fingerprint new/changed                 -> summarize (cache) + embed x2 + upsert
 Functions no longer present               -> delete their points
-Then a meta point records the indexed commit and embedding model.
+Then a meta point records the indexed commit, the repo's git remote and the
+embedding model.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass, field
@@ -44,6 +46,41 @@ def git_dirty_count(repo_path: Path) -> int:
     out = subprocess.check_output(
         ["git", "-C", str(repo_path), "status", "--porcelain"], text=True)
     return sum(1 for line in out.splitlines() if line.strip())
+
+
+def git_remote(repo_path: Path) -> str:
+    """origin's address via normalize_remote; "" if the repo has no origin."""
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", str(repo_path), "remote", "get-url", "origin"],
+            text=True, stderr=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+    return normalize_remote(url)
+
+
+_SCP_REMOTE = re.compile(r"^(?:[^@/\\]+@)?([^/:\\]{2,}):(?!//)([^\\]+)$")   # git@host:org/repo
+
+
+def normalize_remote(url: str) -> str:
+    """A git remote as host/path, the same for every clone however it was made:
+    https://user:token@Host/Org/Repo.git, ssh://git@host:22/org/repo and
+    git@host:org/repo.git all give host/org/repo. User names, passwords and
+    tokens are dropped, never stored. "" when `url` is not a remote (a repo
+    name, a local path, file://)."""
+    u = url.strip()
+    if "://" in u:
+        scheme, rest = u.split("://", 1)
+        if scheme.lower() == "file":
+            return ""
+        hostpart, _, path = rest.partition("/")
+        host = hostpart.rsplit("@", 1)[-1].split(":")[0]        # drop user@ and :port
+    elif m := _SCP_REMOTE.match(u):                             # a drive letter (C:\) is too short
+        host, path = m.groups()
+    else:
+        return ""
+    path = path.strip("/").removesuffix(".git").strip("/")
+    return f"{host}/{path}".lower() if host and path else ""
 
 
 # ---------------------------------------------------------------- collection
@@ -246,7 +283,8 @@ def index_repo(
 
     # ---- meta
     _write_meta(client, collection, repo, dims, {
-        "git_commit": commit, "embed_model": embedder.model, "dims": dims,
+        "git_commit": commit, "remote": git_remote(repo_path),
+        "embed_model": embedder.model, "dims": dims,
         "indexed_at": now, "chunk_count": len(chunks),
         "summarize_model": cache_key(summarizer.model),
     })

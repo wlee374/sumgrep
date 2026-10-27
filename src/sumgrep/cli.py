@@ -369,6 +369,7 @@ def meta(
         return
     head = git_head(repo)
     typer.echo(f"repo            {m['repo']}")
+    typer.echo(f"remote          {m.get('remote') or '- (saved by the next index run, if the repo has an origin)'}")
     typer.echo(f"chunks          {m['chunk_count']}")
     typer.echo(f"indexed commit  {m['git_commit'][:10]}  "
                f"({'current' if m['git_commit'] == head else 'BEHIND HEAD ' + head[:10]})")

@@ -379,10 +379,14 @@ touches the filesystem and never prints absolute paths, so the same
 index works on any machine, from any checkout, wherever it lives. The
 agent opens the file in its own checkout, or greps the function name.
 
-**Which repos.** Every indexed repo; `repo="name"` narrows to one. With
-more than one repo indexed, each result starts with its repo name.
-`index_status` lists the repos and the commit each was indexed at; code
-added after that commit is not in the index.
+**Which repo.** One per search. The agent passes `repo=` with its
+checkout's git remote (`git remote get-url origin`; https or ssh, any user
+name) or the repo's name. `index` saves each repo's remote, so it matches
+on every machine whatever the folder is called, and a different repo that
+only shares the name doesn't match. With more than one repo indexed, a
+search without `repo=` is refused with the list of repos; with one, it may
+be left out. `index_status` lists the repos, their remotes and the commit
+each was indexed at; code added after that commit is not in the index.
 
 **Which settings.** `$SUMGREP_CONFIG` if set, else `sumgrep.toml` in the
 sumgrep folder, else `~/.sumgrep/sumgrep.toml`. `[search]` sets the
@@ -432,7 +436,11 @@ Address, HTTPS and the search log come from `[server]` in `sumgrep.toml` (§6).
    uv run sumgrep summarize --repo /path/to/repo --sample 10  # summaries look right?
    uv run sumgrep index --repo /path/to/repo                  # full run: ~9 s per function with the default model
    ```
-3. Nothing else to configure: the MCP server searches every indexed repo.
+3. Nothing else to configure. Agents name the repo they work in (its git
+   remote, saved by `index`), and sumgrep searches only that one.
+   `uv run sumgrep meta --repo /path/to/repo` shows the saved `remote`;
+   `-` means a repo indexed before sumgrep saved remotes: run `index` on
+   it once more (seconds, no LLM calls).
 
 All repos share one Qdrant collection, filtered by repo name. Two repos
 with the same folder name would collide; rename one.
