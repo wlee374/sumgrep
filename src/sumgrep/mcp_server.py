@@ -54,7 +54,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # qdrant-client/httpx log every request at INFO, and mcp's HTTP transport a
 # "Terminating session" line per request; that noise would land in Claude
 # Code's MCP log or the shared server's log. Keep only warnings and above.
-for _name in ("httpx", "httpcore", "qdrant_client", "mcp.server.streamable_http"):
+for _name in ("httpx", "httpx2", "httpcore", "httpcore2", "anthropic", "qdrant_client",
+              "mcp.server.streamable_http"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
 mcp = MCPServer(
@@ -145,6 +146,24 @@ def _state():
     cfg = load_config(_config_path())
     _log(f"config {cfg.source} · qdrant {cfg.qdrant_url} · embed {cfg.embed_model}")
     return cfg, QdrantClient(url=cfg.qdrant_url), Embedder(cfg.embed_model)
+
+
+@lru_cache(maxsize=1)
+def _reranker():
+    """The [rerank] LLM client, built on first use. (None, why) if it cannot be
+    built (no API key, unknown provider...): searches then return the
+    retrieval order and the search log says so. Fixing it needs a restart."""
+    from .rerank import make_reranker
+    cfg = _state()[0]
+    try:
+        llm = make_reranker(cfg.rerank)
+    except Exception as e:
+        why = f"{type(e).__name__}: {str(e)[:200]}"
+        _log(f"[rerank] disabled: cannot build the {cfg.rerank.provider} client: {why}")
+        return None, why
+    _log(f"[rerank] {cfg.rerank.model} ({cfg.rerank.provider}), "
+         f"{cfg.rerank.candidates} candidates, timeout {cfg.rerank.timeout}s")
+    return llm, None
 
 
 def _metas(cfg, client, repo: str | None) -> tuple[list[dict], str | None]:
@@ -261,12 +280,22 @@ def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
 
     names = [m["repo"] for m in metas]
     rec["commits"] = {m["repo"]: m.get("git_commit", "")[:10] for m in metas}
+    rc = cfg.rerank
     try:
         hits = search(client, cfg.collection, embedder, query,
                       repo=names if len(names) > 1 else names[0],
-                      k=k, mode=mode, floor=sc.floor, code_weight=sc.code_weight)
+                      k=max(k, rc.candidates) if rc.enabled else k,
+                      mode=mode, floor=sc.floor, code_weight=sc.code_weight)
     except Exception as e:                       # Qdrant/Ollama down, etc.
         return f"search failed: {type(e).__name__}: {e}"
+    if rc.enabled and hits:                      # reorder the top candidates; never fail the search
+        from .rerank import rerank
+        llm, why = _reranker()
+        if llm is None:
+            rec["rerank"] = {"model": rc.model, "error": why}
+        else:
+            hits, rec["rerank"] = rerank(query, hits, llm, rc)
+    hits = hits[:k]
     rec["hits"] = [{"symbol": h.symbol, "path": h.path, "start": h.start_line,
                     "end": h.end_line, "kind": h.kind, "cos": round(h.best_cos, 3),
                     **({"repo": h.repo} if len(names) > 1 else {})} for h in hits]
@@ -310,7 +339,9 @@ def index_status(repo: str | None = None) -> str:
             f"indexed at      {m.get('indexed_at')}",
             "",
         ]
+    rc = cfg.rerank
     out += [f"search mode     {cfg.search.mode}",
+            f"rerank          {f'{rc.model} ({rc.provider})' if rc.enabled else 'off'}",
             "reindex         uv run sumgrep index --repo <checkout>   "
             "(a human runs this in the sumgrep project folder)"]
     return "\n".join(out)

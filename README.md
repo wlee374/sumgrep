@@ -152,7 +152,9 @@ Options:
 | `--full` | print the whole summary, not just the first sentence | off |
 | `--floor 0.4` | drop hits whose best score is below this | `[search].floor` (0.35) |
 | `--code-weight 0.2` | hybrid only: scale the code arm's vote | `[search].code_weight` (1.0) |
+| `--rerank` / `--no-rerank` | reorder the top hits with the `[rerank]` LLM, which reads their summaries (§6); ~2 s and ~$0.002 per query with Haiku | `[rerank].enabled` (off) |
 | `--hyde` | rewrite the question with the summarizer LLM first (slow, ~35 s) | off |
+| `--rerank` | also score every arm after the `[rerank]` LLM reorders its top 20 (one LLM call per arm per query) | off |
 
 Examples:
 
@@ -604,6 +606,15 @@ k = 10
 floor = 0.35
 code_weight = 1.0
 
+[rerank]                  # an LLM reorders the top hits at search time (off by default)
+enabled = false           # true: search = retrieval (0.2 s) + one LLM call (~2 s with Haiku)
+provider = "anthropic"    # ollama | anthropic | bedrock — independent of [summarize]
+model = "claude-haiku-5-5"
+think = "low"             # reasoning effort
+candidates = 20           # retrieval hits it reads (max 20)
+text = "summary"          # "summary" = the stored summary; "first" = first sentence only (small local models)
+timeout = 10              # seconds; past this, or on any error, the retrieval order is returned
+
 [server]                  # only for the shared team server: uv run sumgrep serve (§5c)
 address = "0.0.0.0:8000"  # HOST:PORT it listens on
 https = false             # true: https with the two files below
@@ -616,7 +627,7 @@ provider = "ollama"       # ollama | anthropic | bedrock
 model = "qwen3.5:9b"      # with 20+ GB free: qwen3.8:27b, the model behind the results above
 max_words = 300
 num_ctx = 12000           # ollama: context window; must fit an 8k-char function
-think = false             # ollama: skip the reasoning pass
+think = false             # ollama: skip the reasoning pass; "low" | "medium" | "high" = reasoning effort (any provider)
 temperature = 0.7
 top_p = 0.8
 presence_penalty = 1.5    # ollama: stops Qwen looping on tiny functions
@@ -629,12 +640,35 @@ path = "/path/to/myrepo"             # matched against --repo
 exclude = ["third_party/*"]          # glob patterns skipped when chunking
 ```
 
+### Reranking with an LLM (`[rerank]`)
+
+Retrieval alone puts the right function in the top 20 far more often
+than it puts it first. With `[rerank] enabled = true`, every search ends
+with one LLM call that reads the top 20 candidates (name, path, stored
+summary — never code) and returns them best-first; the rest keep their
+retrieval order. Measured on 30 real agent queries (claude-haiku-5-5,
+effort low): the right answer is first 63% of the time instead of 30%,
+MRR 0.44 → 0.69, hand-written queries unchanged or better. Cost: about
+2 s (p90 3.8 s) and $0.002 per query.
+
+`[rerank]` is independent of `[summarize]`: summarize locally and rerank
+with a cloud model, or the reverse. Credentials work the same way
+(`ANTHROPIC_API_KEY` in the environment of the process that searches,
+the AWS chain for Bedrock, nothing for Ollama). If the call fails, times
+out, or the key is missing, the retrieval order is returned; the CLI
+says so under the hits, and the shared server records it in the search
+log (`"rerank": {...}` with `ok` or `error`). A local model works through
+`provider = "ollama"` (set `num_ctx` and consider `text = "first"` for
+small models); how well it ranks has not been measured — use
+`eval --rerank` before trusting it.
+
 ### Changing the summarizer model
 
 1. Edit `[summarize]`. Local: `ollama pull <model>` then set `model`.
    Anthropic API: `provider = "anthropic"`, `model = "claude-haiku-5-5"`,
    `max_tokens = 4000` (it thinks before writing, and thinking counts toward
-   the cap), and `export ANTHROPIC_API_KEY=sk-ant-api...` in your shell.
+   the cap), `think = "low"` (summaries need no deep reasoning; thinking is
+   billed as output), and `export ANTHROPIC_API_KEY=sk-ant-api...` in your shell.
    Never the Claude Code login token.
 2. Test on a sample before committing:
    `uv run sumgrep summarize --repo $REPO --sample 10`

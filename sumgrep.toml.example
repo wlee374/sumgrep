@@ -23,6 +23,17 @@ tls_key = ""               # e.g. "/etc/ssl/sumgrep/key.pem" (no password)
 search_log = "~/.sumgrep/searches.jsonl"   # every search, one JSON line; at 10 MB it rotates,
                                            # 5 files kept (50 MB at most); "" = off
 
+[rerank]                  # an LLM reorders the top hits at search time; off by default
+enabled = false           # true: search = retrieval (0.2 s) + one LLM call (~2 s with Haiku)
+provider = "anthropic"    # ollama | anthropic | bedrock — independent of [summarize]
+model = "claude-haiku-5-5"
+think = "low"             # reasoning effort; low is what the evals measured
+candidates = 20           # retrieval hits it reads (max 20)
+text = "summary"          # "summary" = the stored summary; "first" = first sentence only (small local models)
+timeout = 10              # seconds; past this, or on any error, the retrieval order is returned
+max_retries = 0
+#num_ctx = 16384          # ollama: 20 summaries are ~14k tokens; the default context truncates them
+
 [summarize]
 # Default: a local model that runs on any OS with ~8 GB of free RAM. No API
 # key, and your code never leaves the machine. First: ollama pull qwen3.5:9b

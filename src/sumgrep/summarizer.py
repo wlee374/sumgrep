@@ -85,14 +85,20 @@ class _AnthropicLike:
         self.model = cfg.model
         self.max_words = cfg.max_words
         self.max_tokens = cfg.max_tokens
+        # think = "low" | "medium" | "high" -> output_config.effort (how much
+        # the model reasons before writing; thinking is billed as output).
+        self.effort = cfg.think if isinstance(cfg.think, str) else None
 
     def complete(self, system: str, user: str) -> SummaryResult:
         """One system+user turn -> text. Shared by summaries and HyDE rewrites.
         No `temperature`: current Claude models reject sampling parameters, and
         `[summarize]` keeps one for Ollama."""
+        kwargs = {}
+        if self.effort:
+            kwargs["output_config"] = {"effort": self.effort}
         r = self.client.messages.create(
             model=self.model, max_tokens=self.max_tokens, system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": user}], **kwargs,
         )
         text = "".join(b.text for b in r.content
                        if getattr(b, "type", "") == "text").strip()
@@ -102,23 +108,32 @@ class _AnthropicLike:
         return self.complete(*render_prompt(chunk, self.max_words))
 
 
+def _client_limits(cfg: SummarizeCfg) -> dict:
+    """timeout / max_retries for the API clients: [summarize] leaves them at
+    6 retries and the client's default timeout; [rerank] sets 10 s and 0."""
+    kw = {"max_retries": 6 if cfg.max_retries is None else cfg.max_retries}
+    if cfg.timeout is not None:
+        kw["timeout"] = cfg.timeout
+    return kw
+
+
 class AnthropicSummarizer(_AnthropicLike):
     def __init__(self, cfg: SummarizeCfg):
         import anthropic                           # key from $ANTHROPIC_API_KEY
-        super().__init__(anthropic.Anthropic(max_retries=6), cfg)
+        super().__init__(anthropic.Anthropic(**_client_limits(cfg)), cfg)
 
 
 class BedrockSummarizer(_AnthropicLike):
     def __init__(self, cfg: SummarizeCfg):
         from anthropic import AnthropicBedrock     # AWS credential chain
         super().__init__(AnthropicBedrock(aws_region=cfg.aws_region,
-                                          max_retries=6), cfg)
+                                          **_client_limits(cfg)), cfg)
 
 
 class OllamaSummarizer:
     def __init__(self, cfg: SummarizeCfg):
         import ollama
-        self.client = ollama.Client()
+        self.client = ollama.Client(timeout=cfg.timeout)   # None = no limit
         self.model = cfg.model
         self.max_words = cfg.max_words
         self.options = {k: v for k, v in (("temperature", cfg.temperature),

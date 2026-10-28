@@ -161,6 +161,7 @@ If you chose the Anthropic summarizer, also change `[summarize]`:
 provider = "anthropic"
 model = "claude-haiku-5-5"
 max_tokens = 4000          # it thinks before writing; thinking counts toward this
+think = "low"              # reasoning effort; summaries need little, and thinking is billed
 ```
 
 **Check:**
@@ -643,6 +644,31 @@ Everyone shares the index at one commit. That is the same staleness as
 `index_status` shows the commit.
 
 ---
+
+## 7c. Reranking with an LLM (optional)
+
+`[rerank]` in `sumgrep.toml` (off by default) adds one LLM call to every
+search: it reads the top 20 hits' summaries and puts the most likely
+first. On real queries it doubles how often the right function comes
+first (0.30 → 0.63 hit@1 with `claude-haiku-5-5`), at about 2 s and
+$0.002 per query. It is independent of `[summarize]`: local summaries
+and a cloud reranker is a normal setup.
+
+```toml
+[rerank]
+enabled = true
+provider = "anthropic"      # ollama | anthropic | bedrock
+model = "claude-haiku-5-5"
+think = "low"
+```
+
+The key must be in the environment of the process that searches: for
+`sumgrep serve`, export `ANTHROPIC_API_KEY` in the shell (or service
+file) that starts the server, not just your own shell. `index_status`
+shows `rerank  <model> (<provider>)` when it is on. On any error or
+timeout the retrieval order is returned and the search log line carries
+`"rerank": {"error": ...}`; a client that could not be built at all is
+logged to stderr once and needs a restart after the fix.
 
 ## 8. Changing models (read before you do it)
 

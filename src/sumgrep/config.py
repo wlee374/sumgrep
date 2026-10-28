@@ -1,7 +1,7 @@
 # src/sumgrep/config.py
 """Loads sumgrep.toml. Looks in ./sumgrep.toml, then ~/.sumgrep/sumgrep.toml.
 
-Sections: [qdrant], [embed], [summarize], [search], [server], [[repos]]."""
+Sections: [qdrant], [embed], [summarize], [search], [rerank], [server], [[repos]]."""
 from __future__ import annotations
 
 import tomllib
@@ -23,10 +23,29 @@ class SummarizeCfg:
     top_p: float | None = None      # ollama only
     presence_penalty: float | None = None   # ollama only; Qwen recommends 1.5 (stops loops)
     repeat_penalty: float | None = None     # ollama only; Ollama default 1.1
-    think: bool | str | None = None # ollama only; false = no reasoning; "low"/"medium"/"high" = effort level
+    think: bool | str | None = None # false = no reasoning (ollama); "low"/"medium"/"high" = effort level (all providers)
     keep_alive: str = "10m"         # ollama only; keep the model loaded between calls
     num_ctx: int | None = None      # ollama only; context window — set it, defaults are small
     max_tokens: int = 400           # hard cap on summary length (all providers)
+    timeout: float | None = None    # seconds per request; omitted = client default (10 min for Anthropic)
+    max_retries: int | None = None  # retries on 429/5xx/connection errors; omitted = 6 (summarizer) / client default
+
+
+@dataclass
+class RerankCfg(SummarizeCfg):
+    """[rerank]: an LLM reorders the top retrieval hits at search time, reading
+    their stored summaries (never code). Independent of [summarize]: a local
+    model can write the summaries and a cloud model rerank, or the reverse."""
+    enabled: bool = False           # off: search returns the retrieval order, as before
+    provider: str = "anthropic"
+    model: str = "claude-haiku-5-5"
+    think: bool | str | None = "low"   # reasoning effort; low is what the evals used
+    max_tokens: int = 2048          # the reply is a list of ids; thinking counts toward this
+    timeout: float | None = 10.0    # past this the retrieval order is returned
+    max_retries: int | None = 0     # no retries on the search path
+    num_ctx: int | None = 16384     # ollama: 20 summaries are ~14k tokens
+    candidates: int = 20            # how many retrieval hits it reads (max 20 = PER_ARM)
+    text: str = "summary"           # "summary" = full stored summary · "first" = first sentence only (small local models)
 
 
 @dataclass
@@ -57,6 +76,7 @@ class RepoCfg:
 class Config:
     summarize: SummarizeCfg = field(default_factory=SummarizeCfg)
     search: SearchCfg = field(default_factory=SearchCfg)
+    rerank: RerankCfg = field(default_factory=RerankCfg)
     server: ServerCfg = field(default_factory=ServerCfg)
     repos: list[RepoCfg] = field(default_factory=list)
     embed_model: str = "bge-m3"
@@ -80,6 +100,7 @@ def load_config(path: Path | None = None) -> Config:
             cfg = Config(
                 summarize=_pick(SummarizeCfg, data.get("summarize", {})),
                 search=_pick(SearchCfg, data.get("search", {})),
+                rerank=_pick(RerankCfg, data.get("rerank", {})),
                 server=_pick(ServerCfg, data.get("server", {})),
                 repos=[_pick(RepoCfg, r) for r in data.get("repos", [])],
                 embed_model=data.get("embed", {}).get("model", "bge-m3"),

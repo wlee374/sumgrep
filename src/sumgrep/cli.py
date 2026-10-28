@@ -413,6 +413,10 @@ def search(
     code_weight: float = typer.Option(None, "--code-weight",
                                       help="Scale the code arm in hybrid RRF "
                                            "(default [search].code_weight)."),
+    rerank: bool = typer.Option(None, "--rerank/--no-rerank",
+                                help="Reorder the top hits with the [rerank] LLM, "
+                                     "which reads their summaries (default "
+                                     "[rerank].enabled)."),
 ) -> None:
     """Semantic search: pointers (symbol, file, lines), never source code."""
     from .search import MODES, hyde_rewrite, search as run_search
@@ -439,11 +443,24 @@ def search(
         embed_text = hyde_rewrite(query, make_summarizer(cfg.summarize))
         typer.echo(f"hyde ({time.time() - t0:.1f}s): {embed_text}\n")
 
+    rc = cfg.rerank
+    use_rerank = rc.enabled if rerank is None else rerank
     t0 = time.time()
     hits = run_search(client, cfg.collection, embedder, query,
-                      repo=repo.resolve().name, k=k, mode=mode, floor=floor,
+                      repo=repo.resolve().name, floor=floor, mode=mode,
+                      k=max(k, rc.candidates) if use_rerank else k,
                       embed_text=embed_text, code_weight=code_weight)
     ms = (time.time() - t0) * 1000
+    info = None
+    if use_rerank and hits:
+        from .rerank import make_reranker, rerank as run_rerank
+        try:
+            llm = make_reranker(rc)
+        except Exception as e:
+            info = {"model": rc.model, "error": f"{type(e).__name__}: {e}"}
+        else:
+            hits, info = run_rerank(query, hits, llm, rc)
+    hits = hits[:k]
     if not hits:
         typer.echo(f"no hits ≥ floor  ({ms:.0f} ms)")
         return
@@ -454,6 +471,14 @@ def search(
     typer.echo(f"\n{len(hits)} hits · mode={mode}"
                f"{f' code_weight={code_weight}' if mode == 'hybrid' else ''}"
                f" · floor {floor} · {ms:.0f} ms")
+    if info is not None:
+        if "error" in info:
+            typer.echo(f"rerank skipped ({info['error']}); retrieval order shown")
+        else:
+            typer.echo(f"reranked by {info['model']} · {info['n']} candidates · "
+                       f"{info['ms']} ms"
+                       + ("" if info["ok"] else " · reply partly unparsed, "
+                          "retrieval order kept for the rest"))
 
 
 @app.command()
@@ -473,6 +498,10 @@ def eval(
     code_weight: float = typer.Option(None, "--code-weight",
                                       help="Scale the code arm in hybrid RRF "
                                            "(default [search].code_weight)."),
+    rerank: bool = typer.Option(False, "--rerank",
+                                help="Also score every arm after the [rerank] "
+                                     "LLM reorders its top candidates (one LLM "
+                                     "call per arm per query)."),
 ) -> None:
     """hit@1 / hit@5 / MRR per retrieval arm over eval/queries.yaml."""
     import yaml
@@ -511,6 +540,15 @@ def eval(
     arms = list(MODES)                      # hybrid, code, summary
     variants = [(a, False) for a in arms] + ([(a, True) for a in arms] if hyde else [])
     labels = [f"{a}{'+hyde' if h else ''}" for a, h in variants]
+    rc, llm = cfg.rerank, None
+    if rerank:
+        from .rerank import make_reranker
+        try:
+            llm = make_reranker(rc)
+        except Exception as e:
+            typer.echo(f"error: cannot build the [rerank] client: {e}", err=True)
+            raise typer.Exit(1)
+        labels += [f"rerank({lb})" for lb in labels]
     ranks: dict[str, list[int | None]] = {lb: [] for lb in labels}
 
     summarizer = None
@@ -524,16 +562,23 @@ def eval(
     for q in qs:
         text, answers = q["q"], q["answers"]
         embed_hyde = hyde_rewrite(text, summarizer) if hyde else None
-        row = []
+        row, rr_row = [], []
         for (arm, use_hyde), lb in zip(variants, labels):
             hits = run_search(client, cfg.collection, embedder, text,
-                              repo=repo_name, k=k, mode=arm, floor=0.0,
+                              repo=repo_name, mode=arm, floor=0.0,
+                              k=max(k, rc.candidates) if llm else k,
                               embed_text=embed_hyde if use_hyde else None,
                               code_weight=code_weight)
-            r = rank_of(hits, answers)
+            r = rank_of(hits[:k], answers)
             ranks[lb].append(r)
             row.append(f"{lb}={r if r else '-':<3}")
-        typer.echo(f"[{q.get('kind', '?')[:4]}] {text[:64]:<64}  " + "  ".join(row))
+            if llm:
+                from .rerank import rerank as run_rerank
+                rr, _info = run_rerank(text, hits, llm, rc)
+                r2 = rank_of(rr[:k], answers)
+                ranks[f"rerank({lb})"].append(r2)
+                rr_row.append(f"rerank({lb})={r2 if r2 else '-':<3}")
+        typer.echo(f"[{q.get('kind', '?')[:4]}] {text[:64]:<64}  " + "  ".join(row + rr_row))
         if embed_hyde:
             typer.echo(f"       hyde: {embed_hyde[:120]}")
 
