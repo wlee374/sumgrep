@@ -103,8 +103,8 @@ hasn't been measured this way yet.
 |---|---|---|---|
 | 25 hand-written | 0.76 | 0.92 | 0.81 |
 | 25 hand-written, reranked | 0.78 | 0.96 | 0.87 |
-| 30 real questions agents typed during work | 0.30 | 0.60 | 0.43 |
-| 30 real questions, reranked | **0.63** | 0.73 | **0.69** |
+| 30 questions from real use | 0.30 | 0.60 | 0.43 |
+| 30 questions from real use, reranked | **0.63** | 0.73 | **0.69** |
 
 Reranked rows are the mean of two runs (the reranker's order varies a
 little run to run: ±1 question at "found 1st"). Real questions are much
