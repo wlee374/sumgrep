@@ -91,20 +91,29 @@ This file is the command reference. Design and phase plan:
 
 ## How well it works
 
-Measured on one Go codebase of ~4,600 functions with 55 labeled
-questions, comparing each question with the summaries (the default mode).
-The summaries came from `qwen3.8:27b`; the smaller default `qwen3.5:9b`
+Measured on one Go codebase of ~5,100 functions with 55 labeled
+questions, comparing each question with the summaries (the default mode),
+with and without the optional LLM reranker (`[rerank]`, §6: one
+`claude-haiku-5-5` call per search that reads the top 20 summaries and
+puts the most likely first; about 2 s and $0.002 per query). The
+summaries came from `qwen3.8:27b`; the smaller default `qwen3.5:9b`
 hasn't been measured this way yet.
 
 | Questions | found 1st | in top 5 | MRR@10 |
 |---|---|---|---|
 | 25 hand-written | 0.76 | 0.92 | 0.81 |
-| 30 real questions agents typed during work | 0.33 | 0.63 | 0.47 |
+| 25 hand-written, reranked | 0.78 | 0.96 | 0.87 |
+| 30 real questions agents typed during work | 0.30 | 0.60 | 0.43 |
+| 30 real questions, reranked | **0.63** | 0.73 | **0.69** |
 
-Real questions are much harder than invented ones. Comparing questions
-with the raw code instead of the summaries did worse on every run (top 5:
-0.64 vs 0.96 on the first 25-question eval). Similarity scores are not
-confidence; see §5.
+Reranked rows are the mean of two runs (the reranker's order varies a
+little run to run: ±1 question at "found 1st"). Real questions are much
+harder than invented ones; the reranker's gain is in ordering, not
+recall — the right function was usually in the top 20 already, and a
+model that reads the summaries can put it first where the embedding
+could not. Comparing questions with the raw code instead of the
+summaries did worse on every run (top 5: 0.64 vs 0.96 on the first
+25-question eval). Similarity scores are not confidence; see §5.
 
 ---
 
