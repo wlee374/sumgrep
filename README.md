@@ -671,7 +671,7 @@ or `error`). A local model works through `provider = "ollama"` (set
 `num_ctx` and consider `text = "first"` for small models). Measured
 2026-10-29 on the same queries: a 27B model from first sentences gets
 close to Haiku (real hit@1 0.53, MRR 0.61) at 26 s per query on a
-32 GB Mac; 4B and smaller models return the input order or fail to
+32 GB Mac; 4B and smaller models do not improve the order or fail to
 answer with a ranking. Use `eval --rerank` before trusting one.
 
 ### Changing the summarizer model
