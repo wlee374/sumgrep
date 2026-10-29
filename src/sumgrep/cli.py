@@ -476,9 +476,7 @@ def search(
             typer.echo(f"rerank skipped ({info['error']}); retrieval order shown")
         else:
             typer.echo(f"reranked by {info['model']} · {info['n']} candidates · "
-                       f"{info['ms']} ms"
-                       + ("" if info["ok"] else " · reply partly unparsed, "
-                          "retrieval order kept for the rest"))
+                       f"{info['ms']} ms")
 
 
 @app.command()

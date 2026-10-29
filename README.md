@@ -664,12 +664,15 @@ MRR 0.44 → 0.69, hand-written queries unchanged or better. Cost: about
 with a cloud model, or the reverse. Credentials work the same way
 (`ANTHROPIC_API_KEY` in the environment of the process that searches,
 the AWS chain for Bedrock, nothing for Ollama). If the call fails, times
-out, or the key is missing, the retrieval order is returned; the CLI
-says so under the hits, and the shared server records it in the search
-log (`"rerank": {...}` with `ok` or `error`). A local model works through
-`provider = "ollama"` (set `num_ctx` and consider `text = "first"` for
-small models); how well it ranks has not been measured — use
-`eval --rerank` before trusting it.
+out, the key is missing, or the reply is not a usable ranking, the
+retrieval order is returned; the CLI says so under the hits, and the
+shared server records it in the search log (`"rerank": {...}` with `ok`
+or `error`). A local model works through `provider = "ollama"` (set
+`num_ctx` and consider `text = "first"` for small models). Measured
+2026-10-29 on the same queries: a 27B model from first sentences gets
+close to Haiku (real hit@1 0.53, MRR 0.61) at 26 s per query on a
+32 GB Mac; 4B and smaller models return the input order or fail to
+answer with a ranking. Use `eval --rerank` before trusting one.
 
 ### Changing the summarizer model
 

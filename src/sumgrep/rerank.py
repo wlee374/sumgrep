@@ -72,4 +72,7 @@ def rerank(query: str, hits: list[Hit], llm: Summarizer, cfg: RerankCfg,
         return hits, info
     order, ok = _parse(text, n)
     info.update(ms=round((time.monotonic() - t0) * 1000), ok=ok)
+    if not ok:                                   # no usable ranking: keep the retrieval order
+        info["error"] = f"unparsable reply: {text[:80]!r}"
+        return hits, info
     return [head[i - 1] for i in order] + tail, info
