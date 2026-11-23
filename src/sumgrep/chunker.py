@@ -31,7 +31,7 @@ EXT_LANG = {
     ".go": "go",
     ".ts": "typescript",
     ".tsx": "tsx",
-    ".js": "javascript",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
     ".hpp": "cpp", ".hh": "cpp", ".h": "cpp",
 }
