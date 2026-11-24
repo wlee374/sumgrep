@@ -305,6 +305,19 @@ Line 3: how it was found.
 - `rrf`: the merged score that sets the final order in hybrid mode
   (each arm adds 1/(60+rank)). In summary or code mode it's just the rank.
 
+**Big functions.** A function over 8,000 characters is too big to
+summarize whole (only its first and last 3,000 characters are read), so
+it is also indexed in pieces:
+
+```
+Outer.inner  src/big.tsx:L412-440  [function]     a function defined inside Outer
+Outer#part7  src/big.tsx:L1210-1390  [part]       one slice of the rest of Outer
+```
+
+For a `[part]`, the lines are what to open. Parts are cut where a
+statement or JSX element ends and filled front to back, so editing a big
+function re-summarizes only the parts from the edit onward.
+
 **Modes.** Every function is stored as two vectors: its source and its
 English summary. `summary` compares your question to the paragraphs only.
 `code` compares it to the source only. `hybrid` does both and merges.

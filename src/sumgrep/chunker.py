@@ -2,8 +2,10 @@
 """Phase 1 — AST chunking.
 
 Turns a git repo into a list of Chunk records: one per function, method,
-or class, cut on tree-sitter AST boundaries. Everything downstream
-(summarizer, indexer) consumes these records.
+or class, cut on tree-sitter AST boundaries. A function over
+MAX_CHUNK_CHARS also gets one per nested definition and one per part of
+the rest (see `split`). Everything downstream (summarizer, indexer)
+consumes these records.
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from tree_sitter_language_pack import get_parser
 
 MAX_CHUNK_CHARS = 8_000     # bigger chunks get head+tail truncated (code only)
 TRUNC_KEEP = 3_000          # chars kept at each end when truncating
+MIN_PART_CHARS = 400        # a smaller part of a split function is not indexed
 MAX_FILE_BYTES = 2_000_000  # skip generated/huge files outright
 
 # Always skipped (shell-style patterns; `*` matches across `/`).
@@ -61,8 +64,8 @@ class Chunk:
     repo: str
     path: str          # relative to repo root
     language: str      # as detected from the extension (tsx stays tsx)
-    symbol: str        # qualified: "Router.handle", "Foo::bar", "backoffLoop"
-    kind: str          # "function" | "method" | "class"
+    symbol: str        # qualified: "Router.handle", "Foo::bar", "Outer#part3"
+    kind: str          # "function" | "method" | "class" | "part"
     start_line: int    # 1-based, inclusive
     end_line: int
     code: str          # possibly truncated (see raw_chars)
@@ -81,9 +84,10 @@ def _text(src: bytes, node: Node) -> str:
     return src[node.start_byte:node.end_byte].decode("utf-8", "replace")
 
 
-def normalized_hash(node: Node, src: bytes) -> str:
-    """sha256 over the node's tokens with comments dropped and whitespace
-    collapsed — so comment/formatting edits don't change the hash."""
+def normalized_hash(node: Node | list[Node], src: bytes) -> str:
+    """sha256 over the tokens of the node (or nodes, in order) with comments
+    dropped and whitespace collapsed — so comment/formatting edits don't
+    change the hash."""
     parts: list[bytes] = []
 
     def walk(n: Node) -> None:
@@ -95,7 +99,8 @@ def normalized_hash(node: Node, src: bytes) -> str:
             for c in n.children:
                 walk(c)
 
-    walk(node)
+    for n in node if isinstance(node, list) else [node]:
+        walk(n)
     return hashlib.sha256(b" ".join(parts)).hexdigest()
 
 
@@ -179,7 +184,7 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
     seen: dict[str, int] = {}                      # symbol collision counter
 
     def emit(span: Node, hash_key: str, symbol: str, kind: str,
-             code: str | None = None) -> None:
+             code: str | None = None, last: Node | None = None) -> str:
         n = seen.get(symbol, 0)
         seen[symbol] = n + 1
         if n:                                      # e.g. C++ overloads
@@ -189,12 +194,60 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
             repo=repo, path=rel_path, language=language,
             symbol=symbol, kind=kind,
             start_line=span.start_point[0] + 1,
-            end_line=span.end_point[0] + 1,
+            end_line=(last or span).end_point[0] + 1,
             code=_truncate(text), code_hash=hash_key,
             raw_chars=len(text),
         ))
+        return symbol
 
-    def handle_function(node: Node, span: Node, scope: list[str]) -> None:
+    def split(node: Node, symbol: str) -> None:
+        """A function too big to be summarized whole keeps its own chunk and
+        also gets smaller ones: each definition nested in it (`Outer.inner`),
+        and the rest cut into parts of at most MAX_CHUNK_CHARS on AST
+        boundaries (`Outer#part1`, ...). Parts are filled front to back, so an
+        edit only changes the parts from that point on."""
+        if len(_text(src, node)) <= MAX_CHUNK_CHARS:
+            return
+        pieces: list[Node] = []                    # source order, no definitions
+
+        def collect(n: Node) -> None:
+            for c in n.children:
+                if define(c, [symbol], nested=True):
+                    continue                       # chunked on its own
+                if c.child_count and len(_text(src, c)) > MAX_CHUNK_CHARS:
+                    collect(c)
+                else:
+                    pieces.append(c)
+
+        collect(node)
+        count = 0
+        part: list[Node] = []
+        text = ""
+
+        def flush() -> None:
+            nonlocal count, part, text
+            if (len(text) >= MIN_PART_CHARS
+                    and not all("comment" in p.type for p in part)):
+                count += 1
+                emit(part[0], normalized_hash(part, src),
+                     f"{symbol}#part{count}", "part", code=text, last=part[-1])
+            part, text = [], ""
+
+        for p in pieces:
+            t = _text(src, p)
+            gap = (src[part[-1].end_byte:p.start_byte].decode("utf-8", "replace")
+                   if part else "")
+            if gap.strip():                        # a definition was cut out here
+                gap = "\n"
+            if part and len(text) + len(gap) + len(t) > MAX_CHUNK_CHARS:
+                flush()
+                gap = ""
+            part.append(p)
+            text += gap + t
+        flush()
+
+    def handle_function(node: Node, span: Node, scope: list[str],
+                        nested: bool = False) -> None:
         if lang == "cpp":
             body = node.child_by_field_name("body")
             if body is None or not body.named_children:
@@ -209,10 +262,11 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
         if not name:
             return
         symbol = ".".join(scope + [name]) if scope else name
-        kind = ("method" if scope or "." in name and lang == "go"
+        kind = ("function" if nested
+                else "method" if scope or "." in name and lang == "go"
                 else "function")
-        emit(_span(span), normalized_hash(node, src), symbol, kind)
-        # no recursion: nested defs stay inside this chunk
+        split(node, emit(_span(span), normalized_hash(node, src), symbol, kind))
+        # nested defs stay inside this chunk unless it had to be split
 
     def handle_class(node: Node, span: Node, scope: list[str]) -> None:
         name = _field_name(src, node)
@@ -244,9 +298,11 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
             for ch in body.named_children:
                 walk(ch, scope + [name])
 
-    def handle_declaration(node: Node, scope: list[str]) -> None:
-        """TS/JS: const f = (...) => {...} — chunk named function values."""
-        hit = False
+    def handle_declaration(node: Node, scope: list[str],
+                           nested: bool = False) -> bool:
+        """TS/JS: const f = (...) => {...} — chunk named function values.
+        False = the declaration holds none."""
+        first = None
         for d in node.named_children:
             if d.type != "variable_declarator":
                 continue
@@ -255,15 +311,17 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
                     "arrow_function", "function_expression", "function"):
                 name = _field_name(src, d)
                 if name:
-                    emit(_span(node), normalized_hash(node, src),
-                         ".".join(scope + [name]) if scope else name,
-                         "method" if scope else "function")
-                    hit = True
-        if not hit:
-            for c in node.named_children:
-                walk(c, scope)
+                    symbol = emit(
+                        _span(node), normalized_hash(node, src),
+                        ".".join(scope + [name]) if scope else name,
+                        "method" if scope and not nested else "function")
+                    first = first or symbol
+        if first:
+            split(node, first)
+        return first is not None
 
-    def walk(node: Node, scope: list[str]) -> None:
+    def define(node: Node, scope: list[str], nested: bool = False) -> bool:
+        """Chunk `node` if it is itself a definition. False = it is not one."""
         t = node.type
         if t == "decorated_definition":            # python decorators
             inner = node.child_by_field_name("definition")
@@ -271,16 +329,21 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
                 if inner.type in CLASS_NODES[lang]:
                     handle_class(inner, node, scope)
                 elif inner.type in FUNC_NODES[lang]:
-                    handle_function(inner, node, scope)
-                return
+                    handle_function(inner, node, scope, nested)
+                return True
         if t in CLASS_NODES[lang]:
             handle_class(node, node, scope)
-        elif t in FUNC_NODES[lang]:
-            handle_function(node, node, scope)
-        elif lang == "typescript" and t in ("lexical_declaration",
-                                            "variable_declaration"):
-            handle_declaration(node, scope)
-        else:
+            return True
+        if t in FUNC_NODES[lang]:
+            handle_function(node, node, scope, nested)
+            return True
+        if lang == "typescript" and t in ("lexical_declaration",
+                                          "variable_declaration"):
+            return handle_declaration(node, scope, nested)
+        return False
+
+    def walk(node: Node, scope: list[str]) -> None:
+        if not define(node, scope):
             for c in node.named_children:
                 walk(c, scope)
 

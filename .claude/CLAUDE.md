@@ -35,7 +35,7 @@ real file.
 
 | File | Phase | Role |
 |---|---|---|
-| `src/sumgrep/chunker.py` | 1 | tree-sitter AST chunks → `Chunk(repo, path, symbol, kind, start/end_line, code, code_hash, raw_chars)`. `code_hash` = sha256 of comment-stripped tokens = the freshness key. Python, Go, TypeScript/TSX, JavaScript, C++ |
+| `src/sumgrep/chunker.py` | 1 | tree-sitter AST chunks → `Chunk(repo, path, symbol, kind, start/end_line, code, code_hash, raw_chars)`. `code_hash` = sha256 of comment-stripped tokens = the freshness key. Python, Go, TypeScript/TSX, JavaScript (`.js`/`.mjs`/`.cjs`), C++. A function over `MAX_CHUNK_CHARS` (8,000) keeps its chunk (head+tail truncated) and `split()` adds one per definition nested in it (`Outer.inner`) and one per part of the rest (`Outer#partN`, kind `part`, ≤ 8,000 chars, cut on AST boundaries, filled front to back; parts under `MIN_PART_CHARS` 400 are dropped). Measured 2026-11-23 on a React repo: 70% of oversized code was JSX `return`, 17% nested functions |
 | `src/sumgrep/summarizer.py` | 2 | `Summarizer` Protocol; providers `anthropic` / `bedrock` / `ollama`; SQLite cache `~/.sumgrep/summaries.sqlite` keyed `(code_hash, model#PROMPT_HASH)`; `trim_repetition()` safety net; mush gate |
 | `src/sumgrep/embedder.py` | 3 | bge-m3 via Ollama, batched, 1024 dims |
 | `src/sumgrep/indexer.py` | 3 | Qdrant collection `sumgrep`: named vectors `code` + `summary` (cosine); point id `uuid5(NAMESPACE, "repo:path:symbol")`; payload = metadata + summary + code_hash + git_commit. Unchanged hash → skip; moved lines → `set_payload`; new/changed → summarize + embed + upsert; gone → delete; meta point per repo (commit, embed model, `remote` = origin via `normalize_remote`: host/path, lowercase, no user/token/port/.git) |

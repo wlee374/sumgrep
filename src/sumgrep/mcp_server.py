@@ -239,6 +239,10 @@ def search_code(query: str, k: int | None = None, mode: str | None = None,
     confidence — if the results look unrelated to each other, the concept
     probably isn't in the index.
 
+    A large function is also indexed in pieces. `Outer.inner` is a
+    function defined inside `Outer`. `Outer#part3` (kind `part`) is one
+    slice of `Outer`'s body: open the file at those lines.
+
     mode: "summary" (default, compares the query to each function's
     summary), "code" (to the raw source), or "hybrid" (both, fused).
     """
