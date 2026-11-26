@@ -70,4 +70,7 @@ presence_penalty = 1.5   # ollama: Qwen's own setting against repetition loops
 name = "myrepo"
 path = "/path/to/myrepo"
 exclude = ["third_party/*"]   # glob patterns skipped when chunking (vendored code etc.)
+docs = false                  # true: also index its Markdown files (.md, .mdx) as written.
+                              # No LLM, no summaries; search them with `search --docs`
+                              # or the search_docs tool. `exclude` applies to them too.
 

@@ -1,9 +1,10 @@
 # src/sumgrep/mcp_server.py
 """Phase 5 — MCP server (stdio or HTTP, read-only).
 
-Two tools: search_code(query) -> pointers, index_status() -> what is indexed.
-No reindex tool on purpose: indexing is a long-running write that stays a
-human-triggered CLI command.
+Three tools: search_code(query) -> pointers to functions, search_docs(query)
+-> pointers to sections of the repos' Markdown docs, index_status() -> what
+is indexed. No reindex tool on purpose: indexing is a long-running write
+that stays a human-triggered CLI command.
 
 A pointer is the function name + its path relative to the repo root,
 exactly as stored in the index. The server never looks at checkouts
@@ -75,7 +76,11 @@ mcp = MCPServer(
         "project is not one of the indexed repos (index_status lists them), "
         "don't use sumgrep; use Grep. The index is a snapshot at the commit "
         "index_status shows: line numbers may have drifted and newer code is missing — "
-        "trust the file, grep if absent. Never try to index; re-indexing is a "
+        "trust the file, grep if absent. For 'is there a design note, runbook "
+        "or write-up about X' questions call search_docs, with the same "
+        "repo=: it searches the repo's Markdown docs by meaning (if "
+        "index_status shows docs for that repo) and points to a heading, "
+        "file and lines; read the file. Never try to index; re-indexing is a "
         "manual step a human runs."
     ),
 )
@@ -246,9 +251,42 @@ def search_code(query: str, k: int | None = None, mode: str | None = None,
     mode: "summary" (default, compares the query to each function's
     summary), "code" (to the raw source), or "hybrid" (both, fused).
     """
-    rec: dict = {"query": query, "k": k, "mode": mode, "repo": _shown(repo)}
+    return _logged(ctx, query, k, mode, repo)
+
+
+@mcp.tool()
+def search_docs(query: str, k: int | None = None, repo: str | None = None,
+                ctx: Context | None = None) -> str:
+    """Semantic search over indexed repos' Markdown docs BY MEANING: design
+    notes, investigations, runbooks, READMEs.
+
+    Use for questions a written document would answer: "why did we move
+    the cache out of the request path", "how do I rotate the signing
+    keys", "what was decided about retry limits". The question can be in
+    another language than the docs. For where the code is, use
+    search_code; for exact strings, Grep.
+
+    repo: as for search_code — the output of `git remote get-url origin`
+    in your project, or the repo's name from index_status. Only that
+    repo's docs are searched, and only if index_status shows docs for it.
+
+    Returns up to k pointers: the headings the section sits under, file
+    path relative to the repo root, line range, and the date the file
+    last changed as of the index. Never the text: open the file at those
+    lines. `Title > Section#part2` is one slice of a long section. A
+    dated or old note may describe how things were, not how they are:
+    check the code. Similarity is not confidence.
+    """
+    return _logged(ctx, query, k, None, repo, docs=True)
+
+
+def _logged(ctx: Context | None, query: str, k: int | None, mode: str | None,
+            repo: str | None, docs: bool = False) -> str:
+    """Run one search and append it to the shared server's search log."""
+    rec: dict = {"query": query, "k": k, "mode": "docs" if docs else mode,
+                 "repo": _shown(repo)}
     t0 = time.monotonic()
-    out = _search_code(query, k, mode, repo, rec)
+    out = _search(query, k, mode, repo, rec, docs)
     rec["ms"] = round((time.monotonic() - t0) * 1000)
     if "hits" not in rec:                        # no search ran: `out` says why
         rec["error"] = out
@@ -256,9 +294,10 @@ def search_code(query: str, k: int | None = None, mode: str | None = None,
     return out
 
 
-def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
-                 rec: dict) -> str:
-    """search_code's work; fills `rec` (k, mode, commits, hits) for the search log."""
+def _search(query: str, k: int | None, mode: str | None, repo: str | None,
+            rec: dict, docs: bool = False) -> str:
+    """The work of search_code, or of search_docs with `docs`; fills `rec`
+    (k, mode, commits, hits) for the search log."""
     from .search import MODES, search
 
     try:
@@ -266,9 +305,10 @@ def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
     except FileNotFoundError as e:
         return f"sumgrep is not configured: {e}"
     sc = cfg.search
-    mode = rec["mode"] = mode or sc.mode
-    if mode not in MODES:
-        return f"mode must be one of {MODES}, got {mode!r}"
+    if not docs:
+        mode = rec["mode"] = mode or sc.mode
+        if mode not in MODES:
+            return f"mode must be one of {MODES}, got {mode!r}"
     k = rec["k"] = k or sc.k
 
     try:
@@ -283,6 +323,27 @@ def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
                 "`git remote get-url origin` in your project, or its name above.")
 
     names = [m["repo"] for m in metas]
+    if docs:
+        rec["commits"] = {m["repo"]: m.get("doc_commit", "")[:10] for m in metas}
+        if not any(m.get("doc_count") for m in metas):
+            return (f"no docs are indexed for {', '.join(names)}, only its functions "
+                    "(search_code). Indexing docs is a manual step a human runs.")
+        try:
+            hits = search(client, cfg.collection, embedder, query,
+                          repo=names if len(names) > 1 else names[0],
+                          k=k, floor=sc.floor, docs=True)
+        except Exception as e:
+            return f"search failed: {type(e).__name__}: {e}"
+        rec["hits"] = [{"symbol": h.symbol, "path": h.path, "start": h.start_line,
+                        "end": h.end_line, "kind": h.kind, "cos": round(h.best_cos, 3),
+                        **({"repo": h.repo} if len(names) > 1 else {})} for h in hits]
+        if not hits:
+            return f"no hits above the similarity floor (searched docs of: {', '.join(names)})"
+        label = len(names) > 1
+        return "\n".join(
+            f"{h.repo + ': ' if label else ''}{h.pointer}\n"
+            f"   last changed {h.date or '-'}" for h in hits)
+
     rec["commits"] = {m["repo"]: m.get("git_commit", "")[:10] for m in metas}
     rc = cfg.rerank
     try:
@@ -315,7 +376,8 @@ def _search_code(query: str, k: int | None, mode: str | None, repo: str | None,
 @mcp.tool()
 def index_status(repo: str | None = None) -> str:
     """What is indexed: for each repo (or only repo="name"), how many
-    functions, at which commit, and when.
+    functions, at which commit, and when; and how many doc sections, if
+    its docs are indexed (search_docs).
 
     The index is a snapshot at that commit. Compare it with `git log` in
     your checkout: code changed after it may have moved, and code added
@@ -339,8 +401,10 @@ def index_status(repo: str | None = None) -> str:
             f"repo            {m.get('repo')}",
             f"remote          {m.get('remote') or '-'}",
             f"functions       {m.get('chunk_count')}",
-            f"indexed commit  {m.get('git_commit', '')[:10]}",
-            f"indexed at      {m.get('indexed_at')}",
+            f"indexed commit  {m.get('git_commit', '')[:10] or '-'}",
+            f"indexed at      {m.get('indexed_at') or '-'}",
+            *([f"docs            {m['doc_count']} sections at commit "
+               f"{m.get('doc_commit', '')[:10]}"] if m.get("doc_count") else []),
             "",
         ]
     rc = cfg.rerank

@@ -70,6 +70,7 @@ class RepoCfg:
     name: str
     path: str
     exclude: list[str] = field(default_factory=list)
+    docs: bool = False              # true: also index the repo's Markdown files (no LLM)
 
 
 @dataclass

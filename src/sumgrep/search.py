@@ -38,6 +38,7 @@ class Hit:
     score: float                        # fused RRF score
     best_cos: float                     # max cosine across arms
     arms: dict[str, tuple[int, float]]  # arm -> (rank 1-based, cosine)
+    date: str = ""                      # docs: when the file last changed (as of the index)
 
     @property
     def first_sentence(self) -> str:
@@ -57,19 +58,22 @@ class Hit:
 
 # ---------------------------------------------------------------- arms
 
-def repo_filter(repo: str | list[str]) -> models.Filter:
+def repo_filter(repo: str | list[str], docs: bool = False) -> models.Filter:
+    """One repo's (or several repos') functions, or with `docs` their doc pieces."""
     match = (models.MatchValue(value=repo) if isinstance(repo, str)
              else models.MatchAny(any=list(repo)))
+    kind = (models.MatchValue(value="doc") if docs
+            else models.MatchExcept(**{"except": ["meta", "doc"]}))
     return models.Filter(must=[
         models.FieldCondition(key="repo", match=match),
-        models.FieldCondition(key="kind", match=models.MatchExcept(**{"except": ["meta"]})),
+        models.FieldCondition(key="kind", match=kind),
     ])
 
 
 def query_arms(client: QdrantClient, collection: str, qv: list[float],
                repo: str | list[str], arms: tuple[str, ...], limit: int = PER_ARM,
-               ) -> dict[str, list[models.ScoredPoint]]:
-    flt = repo_filter(repo)
+               docs: bool = False) -> dict[str, list[models.ScoredPoint]]:
+    flt = repo_filter(repo, docs)
     return {
         name: client.query_points(collection, query=qv, using=name,
                                   query_filter=flt, limit=limit,
@@ -107,7 +111,7 @@ def rrf(ranked: dict[str, list[models.ScoredPoint]], k: int,
             path=pl["path"], kind=pl["kind"],
             start_line=pl["start_line"], end_line=pl["end_line"],
             summary=pl.get("summary", ""), score=scores[pid],
-            best_cos=best, arms=dict(arms[pid]),
+            best_cos=best, arms=dict(arms[pid]), date=pl.get("doc_date", ""),
         ))
         if len(hits) == k:
             break
@@ -136,14 +140,17 @@ def hyde_rewrite(query: str, summarizer: Summarizer) -> str:
 def search(client: QdrantClient, collection: str, embedder: Embedder,
            query: str, repo: str | list[str], k: int = 5, mode: str = "hybrid",
            floor: float = DEFAULT_FLOOR, per_arm: int = PER_ARM,
-           embed_text: str | None = None, code_weight: float = 1.0) -> list[Hit]:
+           embed_text: str | None = None, code_weight: float = 1.0,
+           docs: bool = False) -> list[Hit]:
     """Pointers for `query` in `repo` (one name, or a list to search several
     repos at once). `embed_text` overrides what gets
     embedded (HyDE rewrite); `query` is only used for that when it is None.
-    `code_weight` scales the code arm in hybrid fusion (summary stays 1.0)."""
+    `code_weight` scales the code arm in hybrid fusion (summary stays 1.0).
+    `docs` searches the repo's doc pieces instead of its functions: they have
+    one vector, their text as written, so `mode` does not apply."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     qv = embedder.embed([embed_text or query])[0]          # ONE embedding call
-    arms = ("code", "summary") if mode == "hybrid" else (mode,)
-    ranked = query_arms(client, collection, qv, repo, arms, limit=per_arm)
+    arms = ("code",) if docs else ("code", "summary") if mode == "hybrid" else (mode,)
+    ranked = query_arms(client, collection, qv, repo, arms, limit=per_arm, docs=docs)
     return rrf(ranked, k, floor=floor, weights={"code": code_weight})

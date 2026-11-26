@@ -3,8 +3,8 @@
 
 Phase 1: sumgrep chunk     --repo PATH [--exclude PAT]... [--stats] [--sample N]
 Phase 2: sumgrep summarize --repo PATH [--exclude PAT]... [--sample N | --dry-run]
-Phase 3: sumgrep index     --repo PATH [--recreate];  sumgrep meta --repo PATH
-Phase 4: sumgrep search    --repo PATH QUERY [--mode hybrid|code|summary] [--hyde]
+Phase 3: sumgrep index     --repo PATH [--recreate] [--only code|docs];  sumgrep meta --repo PATH
+Phase 4: sumgrep search    --repo PATH QUERY [--mode hybrid|code|summary] [--hyde] [--docs]
          sumgrep eval      --repo PATH [--queries eval/queries.yaml] [--hyde]
 """
 from __future__ import annotations
@@ -56,17 +56,21 @@ def chunk(
                                help="Per-language/kind tables + top-10 largest."),
     sample: int = typer.Option(0, "--sample",
                                help="Print N random chunks for spot-checks."),
+    docs: bool = typer.Option(False, "--docs",
+                              help="Cut the repo's Markdown docs instead of its "
+                                   "code (what `docs = true` would index)."),
 ) -> None:
     """Chunk a repo on AST boundaries and report what was found."""
     from .chunker import chunk_repo
     from .config import load_config
+    from .docs import MAX_DOC_CHARS, chunk_docs
 
     try:                                   # chunking works without a config file
         ex = _excludes(load_config(config), repo, exclude)
     except FileNotFoundError:
         ex = tuple(exclude)
     try:
-        chunks, skipped = chunk_repo(repo, ex)
+        chunks, skipped = (chunk_docs if docs else chunk_repo)(repo, ex)
     except RuntimeError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1)
@@ -87,7 +91,12 @@ def chunk(
         typer.echo("by kind:     "
                    + ", ".join(f"{k}={v}" for k, v in by_kind.most_common()))
         truncated = [c for c in chunks if c.raw_chars > len(c.code)]
-        typer.echo(f"truncated:   {len(truncated)}")
+        if docs:
+            over = sum(c.raw_chars > MAX_DOC_CHARS for c in chunks)
+            typer.echo(f"files:       {len({c.path for c in chunks})}")
+            typer.echo(f"over {MAX_DOC_CHARS:,} chars (no place to cut): {over}")
+        else:
+            typer.echo(f"truncated:   {len(truncated)}")
         typer.echo("\ntop-10 largest:")
         for c in sorted(chunks, key=lambda c: c.raw_chars, reverse=True)[:10]:
             mark = "  (truncated)" if c.raw_chars > len(c.code) else ""
@@ -302,48 +311,78 @@ def index(
     recreate: bool = typer.Option(False, "--recreate",
                                   help="Drop and rebuild the collection "
                                        "(required after changing the embedding model)."),
+    only: str = typer.Option(None, "--only",
+                             help="code | docs: bring only that part up to date and "
+                                  "leave the other as it is. `--only docs` makes no "
+                                  "LLM calls."),
 ) -> None:
-    """Bring the Qdrant index up to date with the repo (incremental)."""
+    """Bring the Qdrant index up to date with the repo (incremental): its
+    functions, and its Markdown docs if the repo has `docs = true`."""
     from qdrant_client import QdrantClient
-    from .config import load_config
+    from .config import load_config, repo_cfg_for
     from .embedder import Embedder
-    from .indexer import index_repo
+    from .indexer import index_docs, index_repo
     from .summarizer import SummaryCache, default_concurrency, make_summarizer
 
+    if only not in (None, "code", "docs"):
+        typer.echo(f"error: --only must be code or docs, got {only!r}", err=True)
+        raise typer.Exit(1)
+    if recreate and only:
+        typer.echo("error: --recreate rebuilds everything; drop --only", err=True)
+        raise typer.Exit(1)
     try:
         cfg = load_config(config)
-        summarizer = make_summarizer(cfg.summarize)
+        summarizer = make_summarizer(cfg.summarize) if only != "docs" else None
     except (FileNotFoundError, ValueError) as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1)
 
-    from .config import repo_cfg_for
     rc = repo_cfg_for(cfg, repo)
     ex = _excludes(cfg, repo, exclude)
+    with_docs = bool(rc and rc.docs)
     typer.echo(f"repo config: {rc.name if rc else 'NONE — no [[repos]] entry matches '
-               + str(repo.resolve())} · excludes: {list(ex) or 'none'}")
+               + str(repo.resolve())} · excludes: {list(ex) or 'none'}"
+               f" · docs: {'on' if with_docs else 'off'}")
+    if only == "docs" and not with_docs:
+        typer.echo("error: docs are off for this repo. Add `docs = true` to its "
+                   f"[[repos]] entry in {cfg.source}", err=True)
+        raise typer.Exit(1)
 
     t0 = time.time()
+    # 60 s, not the client's 5: on a busy machine a write can take longer,
+    # and a timeout would stop the whole run
+    client = QdrantClient(url=cfg.qdrant_url, timeout=60)
+    embedder = Embedder(cfg.embed_model)
+    st = ds = None
     try:
-        st = index_repo(
-            repo, ex,
-            QdrantClient(url=cfg.qdrant_url), cfg.collection,
-            Embedder(cfg.embed_model), summarizer,
-            SummaryCache(cfg.cache_dir / "summaries.sqlite"),
-            default_concurrency(cfg.summarize),
-            log=lambda s: typer.echo(s), recreate=recreate)
+        if only != "docs":
+            st = index_repo(
+                repo, ex, client, cfg.collection, embedder, summarizer,
+                SummaryCache(cfg.cache_dir / "summaries.sqlite"),
+                default_concurrency(cfg.summarize),
+                log=lambda s: typer.echo(s), recreate=recreate)
+        if only != "code":
+            ds = index_docs(repo, ex, client, cfg.collection, embedder,
+                            log=lambda s: typer.echo(s), enabled=with_docs)
     except RuntimeError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1)
     except KeyboardInterrupt:
         _stopped()
 
-    typer.echo(f"\ndone in {time.time() - t0:.0f}s · chunks {st.chunks} · "
-               f"unchanged {st.unchanged} · lines refreshed {st.lines_refreshed} · "
-               f"embedded {st.upserted} · deleted {st.deleted} · "
-               f"LLM calls {st.summarized} · failed {st.failed}")
-    for e in st.errors[:10]:
-        typer.echo(f"  ! {e}")
+    typer.echo(f"\ndone in {time.time() - t0:.0f}s")
+    if st is not None:
+        typer.echo(f"code · chunks {st.chunks} · "
+                   f"unchanged {st.unchanged} · lines refreshed {st.lines_refreshed} · "
+                   f"embedded {st.upserted} · deleted {st.deleted} · "
+                   f"LLM calls {st.summarized} · failed {st.failed}")
+        for e in st.errors[:10]:
+            typer.echo(f"  ! {e}")
+    if ds is not None and (with_docs or ds.deleted):
+        typer.echo(f"docs · sections {ds.chunks} · "
+                   f"unchanged {ds.unchanged} · lines refreshed {ds.lines_refreshed} · "
+                   f"embedded {ds.upserted} · deleted {ds.deleted}"
+                   + ("" if with_docs else "  (docs are off for this repo)"))
 
 
 @app.command()
@@ -368,11 +407,16 @@ def meta(
         typer.echo(m["git_commit"])
         return
     head = git_head(repo)
+    def at(commit: str) -> str:
+        return f"{commit[:10]}  ({'current' if commit == head else 'BEHIND HEAD ' + head[:10]})"
+
     typer.echo(f"repo            {m['repo']}")
     typer.echo(f"remote          {m.get('remote') or '- (saved by the next index run, if the repo has an origin)'}")
     typer.echo(f"chunks          {m['chunk_count']}")
-    typer.echo(f"indexed commit  {m['git_commit'][:10]}  "
-               f"({'current' if m['git_commit'] == head else 'BEHIND HEAD ' + head[:10]})")
+    typer.echo(f"indexed commit  {at(m['git_commit']) if m['git_commit'] else '- (only its docs are indexed)'}")
+    if m.get("doc_count"):
+        typer.echo(f"doc sections    {m['doc_count']}")
+        typer.echo(f"docs commit     {at(m.get('doc_commit', ''))}")
     typer.echo(f"dirty files     {git_dirty_count(repo)}")
     typer.echo(f"embed model     {m['embed_model']} ({m['dims']} dims)")
     typer.echo(f"summarizer      {m['summarize_model']}")
@@ -417,16 +461,43 @@ def search(
                                 help="Reorder the top hits with the [rerank] LLM, "
                                      "which reads their summaries (default "
                                      "[rerank].enabled)."),
+    docs: bool = typer.Option(False, "--docs",
+                              help="Search the repo's docs instead of its functions. "
+                                   "Their text is compared as written, so --mode, "
+                                   "--hyde, --code-weight and --rerank do not apply."),
 ) -> None:
     """Semantic search: pointers (symbol, file, lines), never source code."""
     from .search import MODES, hyde_rewrite, search as run_search
 
+    if docs and (mode or hyde or code_weight is not None or rerank is not None):
+        typer.echo("error: --docs takes only --k and --floor", err=True)
+        raise typer.Exit(1)
     try:
         cfg, client, embedder = _open_index(config)
     except FileNotFoundError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1)
     sc = cfg.search
+    if docs:
+        from .indexer import read_meta
+        if not (read_meta(client, cfg.collection, repo.resolve().name) or {}).get("doc_count"):
+            typer.echo("no docs are indexed for this repo. Add `docs = true` to its "
+                       f"[[repos]] entry in {cfg.source}, then: "
+                       "sumgrep index --repo PATH --only docs", err=True)
+            raise typer.Exit(1)
+        t0 = time.time()
+        hits = run_search(client, cfg.collection, embedder, query,
+                          repo=repo.resolve().name, k=k or sc.k, docs=True,
+                          floor=sc.floor if floor is None else floor)
+        ms = (time.time() - t0) * 1000
+        if not hits:
+            typer.echo(f"no hits ≥ floor  ({ms:.0f} ms)")
+            return
+        for h in hits:
+            typer.echo(h.pointer)
+            typer.echo(f"   last changed {h.date or '-'} · cos {h.best_cos:.2f}")
+        typer.echo(f"\n{len(hits)} hits · docs · {ms:.0f} ms")
+        return
     mode = mode or sc.mode
     k = k or sc.k
     floor = sc.floor if floor is None else floor

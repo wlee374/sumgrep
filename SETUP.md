@@ -231,6 +231,18 @@ uv run sumgrep index --repo $REPO
 Tip for the local model: run step 3 overnight. Finished summaries are
 cached as they complete, so an interrupted run loses nothing.
 
+Optional: the repo's Markdown docs. Add `docs = true` to its `[[repos]]`
+entry and step 3 indexes them too, as written, with no LLM calls (under
+a second per section). To do only that part:
+
+```bash
+uv run sumgrep chunk --repo $REPO --docs --stats   # how many sections, from how many files
+uv run sumgrep index --repo $REPO --only docs
+uv run sumgrep search --repo $REPO "a question one of your docs answers" --docs
+```
+
+Details: README §2, "Docs".
+
 ### Check (both paths)
 
 ```bash
@@ -311,7 +323,7 @@ server's `instructions` instead.
 Open a **new** Claude Code session in the indexed repo (`cd $REPO &&
 claude`, or open the folder in VS Code and start a fresh chat). Type
 `/mcp`: `sumgrep` (Option B) or `plugin:sumgrep:sumgrep` (Option A)
-should be listed with two tools.
+should be listed with three tools.
 
 Then ask a question in your own words, for example:
 

@@ -17,6 +17,9 @@ Read         →  src/sumgrep/search.py, lines 83-114
 Grep finds the names you already know. sumgrep finds the code when you
 only know what it does.
 
+It can also index a repo's Markdown docs, as they are written, and point
+to the section that answers a question (§2, "Docs").
+
 ## What you need
 
 - **Docker**, running Qdrant (the vector database) on port 6333.
@@ -183,10 +186,11 @@ Incremental. Only functions whose body changed are re-summarized
 (~9 s each with the default local model). Unchanged functions, comment
 edits, and moved code cost nothing. A no-op run takes ~3 s.
 
-The last line tells you what happened:
+The last lines tell you what happened:
 
 ```
-done in 41s · chunks 4215 · unchanged 4214 · lines refreshed 0 · embedded 1 · deleted 0 · LLM calls 1 · failed 0
+done in 41s
+code · chunks 4215 · unchanged 4214 · lines refreshed 0 · embedded 1 · deleted 0 · LLM calls 1 · failed 0
 ```
 
 | Field | Meaning |
@@ -199,6 +203,64 @@ done in 41s · chunks 4215 · unchanged 4214 · lines refreshed 0 · embedded 1 
 
 Re-indexing is manual by design. There is no git hook; a local
 summarizer is too heavy to run on every commit.
+
+### Docs
+
+A repo's Markdown files (`.md`, `.mdx`) can be indexed too. Their text
+is embedded as it is written: no summaries, no LLM, no cost. Turn it on
+per repo in `sumgrep.toml`:
+
+```toml
+[[repos]]
+name = "myrepo"
+path = "/path/to/myrepo"
+docs = true               # `exclude` applies to docs as well
+```
+
+```bash
+uv run sumgrep chunk  --repo $REPO --docs --stats    # how the docs would be cut; writes nothing
+uv run sumgrep index  --repo $REPO                   # functions and docs
+uv run sumgrep index  --repo $REPO --only docs       # docs alone: no LLM calls
+uv run sumgrep search --repo $REPO "why did the cache leave the request path" --docs
+```
+
+```
+Cache design > Why it left the request path  docs/cache-design.md:L40-88  [doc]
+   last changed 2026-03-02 · cos 0.64
+```
+
+A result is a pointer, never the text: the headings the section sits
+under, the file, the lines, and the date the file last changed as of the
+index. An old note may describe how things were, so check the code.
+
+How a file is cut:
+
+- A file up to 4,000 characters is one entry.
+- A bigger one is cut at headings, top level first and only as deep as
+  needed. A section that fits is one entry.
+- A section with no heading left to cut at is cut at blank lines, and a
+  single table, list or code block that is still too big at line ends: a
+  new table row, a new list item, the end of a sentence. Those entries
+  are named `Title > Section#part2`.
+- Never inside a sentence. Text with no such place within 4,000
+  characters stays whole.
+
+4,000 because bge-m3 through Ollama reads only the first 2,048 tokens of
+an input, about 4,000 characters of Korean or 7,000 of English.
+
+Good to know:
+
+- The question can be in another language than the docs. Measured on
+  1,585 sections of mostly Korean docs: 12 English questions each found
+  the right file first (the questions were written from the file names,
+  which favours them).
+- Each run embeds only the sections whose text changed, under a second
+  each on Apple Silicon. A run with nothing to do takes ~3 s.
+- `--only code` leaves the docs as they are; `--only docs` leaves the
+  functions as they are.
+- Take `docs = true` out and run `index`: the repo's doc entries are removed.
+- Docs have one vector (their text), so `--mode`, `--hyde` and the
+  reranker do not apply to `--docs`.
 
 ### Is the index stale?
 
@@ -272,6 +334,7 @@ question, the rank at which the right answer appeared in each arm
 ```bash
 uv run sumgrep chunk --repo $REPO --stats               # how the repo splits into functions
 uv run sumgrep chunk --repo $REPO --sample 5            # print 5 random function chunks
+uv run sumgrep chunk --repo $REPO --docs --sample 5     # the same for the repo's Markdown docs
 uv run sumgrep summarize --repo $REPO --dry-run         # how many summaries are missing
 uv run sumgrep summarize --repo $REPO --sample 10       # summarize 10 random functions, print them, mush gate
 uv run sumgrep summarize --repo $REPO --symbol NAME --force   # regenerate one summary
@@ -335,9 +398,9 @@ reading the file.
 
 ## 5b. Using it from Claude Code (MCP server)
 
-The same search, exposed as two tools Claude Code can call:
-`search_code(query, k?, mode?, repo?)` and `index_status(repo?)`. There is
-no re-index tool on purpose.
+The same search, exposed as three tools Claude Code can call:
+`search_code(query, k?, mode?, repo?)`, `search_docs(query, k?, repo?)`
+and `index_status(repo?)`. There is no re-index tool on purpose.
 
 Connect it **one** way, not both (two registrations give every tool twice).
 
@@ -358,7 +421,8 @@ Or inside a session: `/plugin marketplace add wlee374/sumgrep`, then
 - The plugin runs from Claude Code's plugin cache, so it reads its
   settings from `~/.sumgrep/sumgrep.toml` (or `$SUMGREP_CONFIG`), never
   from your clone. `import` and `SETUP.md` put the file there.
-- Its tools are named `mcp__plugin_sumgrep_sumgrep__search_code` and
+- Its tools are named `mcp__plugin_sumgrep_sumgrep__search_code`,
+  `mcp__plugin_sumgrep_sumgrep__search_docs` and
   `mcp__plugin_sumgrep_sumgrep__index_status`.
 
 **Or register it from your clone** (user scope, so it's available in every
@@ -382,9 +446,9 @@ Claude Code is **not** running (it rewrites that file on exit):
 }
 ```
 
-Its tools are named `mcp__sumgrep__search_code` and
-`mcp__sumgrep__index_status`. Check it's registered: `claude mcp list`,
-or `/mcp` inside a session.
+Its tools are named `mcp__sumgrep__search_code`,
+`mcp__sumgrep__search_docs` and `mcp__sumgrep__index_status`. Check it's
+registered: `claude mcp list`, or `/mcp` inside a session.
 
 **Or connect to a shared server** your team runs (§5c), instead of
 either of the above. Nothing else to install:
@@ -402,6 +466,10 @@ name, file path relative to the repo root, line range, kind, e.g.
 touches the filesystem and never prints absolute paths, so the same
 index works on any machine, from any checkout, wherever it lives. The
 agent opens the file in its own checkout, or greps the function name.
+`search_docs` answers the same way for a repo's docs (§2, "Docs"):
+headings, file, lines and the file's last-changed date, never the text.
+It only finds something for repos indexed with `docs = true`;
+`index_status` shows a `docs` line for those.
 
 **Which repo.** One per search. The agent passes `repo=` with its
 checkout's git remote (`git remote get-url origin`; https or ssh, any user
@@ -571,7 +639,7 @@ Add the MCP tool names (the plugin's names are in §5b):
 ---
 name: code-locator
 description: Finds where a concept is implemented in this repo
-tools: mcp__sumgrep__search_code, mcp__sumgrep__index_status, Read, Grep, Glob
+tools: mcp__sumgrep__search_code, mcp__sumgrep__search_docs, mcp__sumgrep__index_status, Read, Grep, Glob
 ---
 For "where is X" questions call search_code first, then Read the pointed
 file to confirm. Use Grep only for exact identifiers.
@@ -590,8 +658,8 @@ opts = ClaudeAgentOptions(
         "args": ["run", "--project", "/path/to/sumgrep",
                  "python", "-m", "sumgrep.mcp_server"],
     }},
-    allowed_tools=["mcp__sumgrep__search_code", "mcp__sumgrep__index_status",
-                   "Read", "Grep"],
+    allowed_tools=["mcp__sumgrep__search_code", "mcp__sumgrep__search_docs",
+                   "mcp__sumgrep__index_status", "Read", "Grep"],
 )
 ```
 
@@ -660,6 +728,7 @@ max_tokens = 1500
 name = "myrepo"
 path = "/path/to/myrepo"             # matched against --repo
 exclude = ["third_party/*"]          # glob patterns skipped when chunking
+docs = false                         # true: also index its Markdown files as written (§2, "Docs")
 ```
 
 ### Reranking with an LLM (`[rerank]`)
@@ -728,6 +797,7 @@ Summaries are reused from cache; only the embedding step reruns (~13 min).
 | Qdrant volume `qdrant_storage` | the vector DB. Survives container restarts |
 | `src/sumgrep/summarizer.py` | the summary prompt |
 | `src/sumgrep/search.py` | retrieval and fusion |
+| `src/sumgrep/docs.py` | how Markdown files are cut into entries |
 | `src/sumgrep/mcp_server.py` | the MCP server Claude Code talks to |
 | `.claude-plugin/` | the Claude Code plugin and its marketplace entry |
 | `~/.claude/CLAUDE.md` | global steering paragraph for Claude Code |
@@ -747,6 +817,7 @@ Summaries are reused from cache; only the embedding step reruns (~13 min).
 | index: `collection has 1024-dim vectors but ... produces N` | embedding model changed | `index --recreate` |
 | `repo config: NONE` in index output | `--repo` path doesn't match a `[[repos]]` entry | fix the path in sumgrep.toml; excludes won't apply otherwise |
 | summaries loop / repeat themselves | Qwen without penalty | keep `presence_penalty = 1.5`, `think = false` |
+| `search --docs` / `search_docs`: no docs are indexed | the repo has no `docs = true`, or `index` has not run since | add it to the `[[repos]]` entry, then `index --repo $REPO --only docs` |
 | shared server: `claude mcp list` shows `✘ Failed to connect` | server down, wrong address, or not on its network | office network / VPN on? server running? (`SETUP.md` §7b) |
 | shared server over HTTPS: `✘ Failed to connect` with a certificate error | address isn't the hostname on the certificate, or the machine doesn't trust its issuer | `SETUP.md` §7b step 3 (`NODE_EXTRA_CA_CERTS`) |
 

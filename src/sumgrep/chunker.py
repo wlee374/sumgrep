@@ -64,8 +64,8 @@ class Chunk:
     repo: str
     path: str          # relative to repo root
     language: str      # as detected from the extension (tsx stays tsx)
-    symbol: str        # qualified: "Router.handle", "Foo::bar", "Outer#part3"
-    kind: str          # "function" | "method" | "class" | "part"
+    symbol: str        # qualified: "Router.handle", "Foo::bar", "Outer#part3"; docs: "Title > Section"
+    kind: str          # "function" | "method" | "class" | "part" | "doc" (docs.py)
     start_line: int    # 1-based, inclusive
     end_line: int
     code: str          # possibly truncated (see raw_chars)
@@ -354,12 +354,8 @@ def chunk_file(repo: str, repo_root: Path, rel_path: str) -> list[Chunk]:
 # ---------------------------------------------------------------- per-repo
 
 
-def chunk_repo(repo_path: Path,
-               exclude: tuple[str, ...] = ()) -> tuple[list[Chunk], list[str]]:
-    """Returns (chunks, skipped) — skipped is 'path (reason)' strings."""
-    patterns = (*DEFAULT_EXCLUDES, *exclude)
-    repo_root = repo_path.resolve()
-    repo = repo_root.name
+def tracked_files(repo_root: Path) -> list[str]:
+    """Every file git tracks in the repo, relative to its root."""
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_root), "ls-files", "-z"],
@@ -369,12 +365,21 @@ def chunk_repo(repo_path: Path,
         raise RuntimeError(
             f"{repo_root} is not a git repository "
             f"(git ls-files failed: {e.stderr.decode().strip()})") from e
+    return [rel for rel in out.decode("utf-8", "replace").split("\0") if rel]
+
+
+def chunk_repo(repo_path: Path,
+               exclude: tuple[str, ...] = ()) -> tuple[list[Chunk], list[str]]:
+    """Returns (chunks, skipped) — skipped is 'path (reason)' strings."""
+    patterns = (*DEFAULT_EXCLUDES, *exclude)
+    repo_root = repo_path.resolve()
+    repo = repo_root.name
 
     chunks: list[Chunk] = []
     skipped: list[str] = []
     excluded = 0
-    for rel in out.decode("utf-8", "replace").split("\0"):
-        if not rel or Path(rel).suffix not in EXT_LANG:
+    for rel in tracked_files(repo_root):
+        if Path(rel).suffix not in EXT_LANG:
             continue
         if any(fnmatch.fnmatch(rel, pat) for pat in patterns):
             excluded += 1

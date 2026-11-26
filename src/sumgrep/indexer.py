@@ -8,6 +8,9 @@ For each function in the repo:
 Functions no longer present               -> delete their points
 Then a meta point records the indexed commit, the repo's git remote and the
 embedding model.
+
+Docs (index_docs) go the same way without the LLM: each piece of a Markdown
+file is embedded as written into the `code` vector only, as kind "doc".
 """
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ from typing import Callable
 from qdrant_client import QdrantClient, models
 
 from .chunker import Chunk, chunk_repo
+from .docs import DOC_EXTS, chunk_docs, embed_text
 from .embedder import Embedder
 from .summarizer import Summarizer, SummaryCache, cache_key, summarize_chunks
 
@@ -137,24 +141,33 @@ def list_meta(client: QdrantClient, name: str) -> list[dict]:
 
 def _write_meta(client: QdrantClient, name: str, repo: str, dims: int,
                 payload: dict) -> None:
+    """Set `payload` on the repo's meta point, keeping what is already there:
+    a code run and a docs run each write their own part."""
     unit = [1.0] + [0.0] * (dims - 1)          # valid unit vector, never matched
+    blank = {"git_commit": "", "indexed_at": "", "chunk_count": 0, "summarize_model": ""}
+    old = read_meta(client, name, repo) or {}
     client.upsert(name, points=[models.PointStruct(
         id=meta_id(repo), vector={"code": unit, "summary": unit},
-        payload={"kind": "meta", "repo": repo, **payload})])
+        payload={**blank, **old, "kind": "meta", "repo": repo, **payload})])
 
 
-def _existing(client: QdrantClient, name: str, repo: str) -> dict[str, dict]:
-    """{point_id: {code_hash, start_line, end_line}} for this repo."""
+def _existing(client: QdrantClient, name: str, repo: str,
+              docs: bool = False) -> dict[str, dict]:
+    """{point_id: {code_hash, start_line, end_line}} for this repo's functions,
+    or with `docs` for its doc pieces (those also carry doc_date)."""
     out: dict[str, dict] = {}
+    kind = (models.MatchValue(value="doc") if docs
+            else models.MatchExcept(**{"except": ["meta", "doc"]}))
     flt = models.Filter(must=[
         models.FieldCondition(key="repo", match=models.MatchValue(value=repo)),
-        models.FieldCondition(key="kind", match=models.MatchExcept(**{"except": ["meta"]})),
+        models.FieldCondition(key="kind", match=kind),
     ])
     offset = None
     while True:
         pts, offset = client.scroll(
             name, scroll_filter=flt, limit=1000, offset=offset,
-            with_payload=["code_hash", "start_line", "end_line"], with_vectors=False)
+            with_payload=["code_hash", "start_line", "end_line", "doc_date"],
+            with_vectors=False)
         for p in pts:
             out[str(p.id)] = p.payload
         if offset is None:
@@ -287,5 +300,106 @@ def index_repo(
         "embed_model": embedder.model, "dims": dims,
         "indexed_at": now, "chunk_count": len(chunks),
         "summarize_model": cache_key(summarizer.model),
+    })
+    return st
+
+
+# ---------------------------------------------------------------- docs
+
+def doc_dates(repo_path: Path) -> dict[str, str]:
+    """{path: date of the last commit that changed it} for Markdown files."""
+    out = subprocess.run(
+        ["git", "-C", str(repo_path), "-c", "core.quotepath=off", "log",
+         "--format=@%cs", "--name-only", "--", *(f"*{e}" for e in DOC_EXTS)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
+    dates: dict[str, str] = {}
+    date = ""
+    for line in out.splitlines():
+        if line.startswith("@"):
+            date = line[1:]
+        elif line:
+            dates.setdefault(line, date)           # newest commit comes first
+    return dates
+
+
+def index_docs(
+    repo_path: Path,
+    excludes: tuple[str, ...],
+    client: QdrantClient,
+    collection: str,
+    embedder: Embedder,
+    log: Callable[[str], None] = lambda s: None,
+    enabled: bool = True,
+) -> IndexStats:
+    """Bring the repo's doc pieces (kind "doc") up to date. A piece is embedded
+    as written (docs.embed_text) into the `code` vector; it has no summary.
+    `enabled` false = docs are off for this repo: its doc pieces are removed."""
+    st = IndexStats()
+    repo_path = repo_path.resolve()
+    repo = repo_path.name
+    commit = git_head(repo_path)
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    dims = embedder.probe_dims()
+    ensure_collection(client, collection, dims, embedder.model)
+    chunks = chunk_docs(repo_path, excludes)[0] if enabled else []
+    existing = _existing(client, collection, repo, docs=True)
+    if not chunks and not existing:
+        return st
+    dates = doc_dates(repo_path)
+    st.chunks = len(chunks)
+
+    todo: list[Chunk] = []
+    refresh: list[tuple[str, Chunk]] = []
+    current_ids: set[str] = set()
+    for c in chunks:
+        pid = point_id(repo, c.path, c.symbol)
+        current_ids.add(pid)
+        old = existing.get(pid)
+        if old is None or old.get("code_hash") != c.code_hash:
+            todo.append(c)
+        elif ((old.get("start_line"), old.get("end_line"), old.get("doc_date"))
+              != (c.start_line, c.end_line, dates.get(c.path, ""))):
+            refresh.append((pid, c))
+        else:
+            st.unchanged += 1
+    gone = [pid for pid in existing if pid not in current_ids]
+    log(f"docs: {len(chunks)} sections · unchanged {st.unchanged} · moved {len(refresh)}"
+        f" · new/changed {len(todo)} · to delete {len(gone)}")
+
+    for i in range(0, len(todo), UPSERT_BATCH):
+        batch = todo[i:i + UPSERT_BATCH]
+        vecs = embedder.embed([embed_text(c) for c in batch])
+        client.upsert(collection, points=[
+            models.PointStruct(
+                id=point_id(repo, c.path, c.symbol),
+                vector={"code": v},
+                payload={
+                    "repo": repo, "path": c.path, "symbol": c.symbol,
+                    "kind": c.kind, "language": c.language,
+                    "start_line": c.start_line, "end_line": c.end_line,
+                    "code_hash": c.code_hash, "doc_date": dates.get(c.path, ""),
+                    "git_commit": commit, "indexed_at": now,
+                })
+            for c, v in zip(batch, vecs)
+        ])
+        st.upserted += len(batch)
+        log(f"  docs embedded {st.upserted}/{len(todo)}")
+
+    for pid, c in refresh:
+        client.set_payload(collection, points=[pid], payload={
+            "start_line": c.start_line, "end_line": c.end_line,
+            "doc_date": dates.get(c.path, ""),
+            "git_commit": commit, "indexed_at": now})
+    st.lines_refreshed = len(refresh)
+
+    if gone:
+        client.delete(collection, points_selector=models.PointIdsList(points=gone))
+    st.deleted = len(gone)
+
+    _write_meta(client, collection, repo, dims, {
+        "doc_count": len(chunks), "doc_commit": commit,
+        "remote": git_remote(repo_path),
+        "embed_model": embedder.model, "dims": dims,
     })
     return st

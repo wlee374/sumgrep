@@ -249,9 +249,12 @@ def _test_search(cfg, client, name: str) -> list[dict]:
         _fail(f"this index was built with {', '.join(other)}, but sumgrep.toml "
               f"uses {cfg.embed_model}. Ask whoever sent the file which to use.")
     repos = [m["repo"] for m in metas]
-    hits = search(client, name, Embedder(cfg.embed_model), "error handling",
-                  repo=repos if len(repos) > 1 else repos[0], k=1,
-                  mode=cfg.search.mode, floor=0.0)
+    embedder = Embedder(cfg.embed_model)
+    where = repos if len(repos) > 1 else repos[0]
+    hits = (search(client, name, embedder, "error handling", repo=where, k=1,
+                   mode=cfg.search.mode, floor=0.0)
+            or search(client, name, embedder, "error handling", repo=where, k=1,
+                      floor=0.0, docs=True))        # an index of docs only
     if not hits:
         _fail("the test search found nothing; the file may be damaged. Ask for a new export.")
     _say(f"  test search OK (found {hits[0].symbol})")
@@ -323,7 +326,8 @@ def import_bundle(file: Path, config: Path | None, collection: str | None) -> No
 
     _say("\nDone. This computer can now search:")
     for m in metas:
-        _say(f"  {m.get('repo')}: {m.get('chunk_count')} functions, "
+        docs = f", {m['doc_count']} doc sections" if m.get("doc_count") else ""
+        _say(f"  {m.get('repo')}: {m.get('chunk_count')} functions{docs}, "
              f"commit {str(m.get('git_commit', ''))[:8]}, indexed {str(m.get('indexed_at', ''))[:10]}")
     _say("Next: open a NEW Claude Code session in your project and ask something like\n"
          '  "where is the code that handles login?"')
